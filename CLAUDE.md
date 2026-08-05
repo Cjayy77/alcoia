@@ -137,6 +137,16 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 - **Fallback constants** (`200`, `50`, `80`, `30`, `0.1`, `200`) are all focused-looking. When data is sparse the extractor fabricates plausible focused-reading features instead of abstaining.
 - **DBSCAN `eps: 80`** is below the tracker error, so it clusters noise. The documented fallback comment — "a noisy classification is better than no classification" — is backwards for a system that acts on its output.
 - **Keep:** `gaze_drift_px`. Dispersion is the one gaze measure with consistent support in the literature.
+- **Added in P2:** `on_page_fraction` (share of samples inside the padded text-column rect) and
+  `face_present`, plus a `presence()` method that reports even below `MIN_POINTS` — `computeFeatures()`
+  returns null there, so absence was previously unobservable from the extractor. Both abstain rather
+  than defaulting: `on_page_fraction` is `null` when there is no content rect. These are the only
+  gaze questions a ~180px tracker can answer honestly, and they are what the engine consumes.
+- **Still not done — blocked.** Deleting `saccade_length`, `saccade_std` and `velocity_mean` requires
+  retraining first (see THE TRAP), and retraining replaces the classifier, which needs human
+  approval. `line_reread_count` is superseded by `telemetry/scroll-regression.js` for decisions, but
+  the feature still exists and still feeds the classifier — removing it is part of the same blocked
+  deletion.
 
 ### `classifier.js`
 
