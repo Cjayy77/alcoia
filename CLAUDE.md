@@ -54,7 +54,14 @@ TL_DR/
 
 **Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 60 tests over the state
 engine, the interruption budget, the fusion of both pipelines, and the missing-key trap.
-`npm run lint` still does not exist; do not cite it as passing.
+`npm run test:browser` loads the extension unpacked in Chromium and runs the verification
+checklist below. `npm run lint` still does not exist; do not cite it as passing.
+
+**Verified in a real browser (P1):** content script injects with no page errors; telemetry-only
+detection reaches the reader with the camera off (`State: struggling (conf 0.60, camera 0.00)`);
+zero `getUserMedia` calls when the camera is off; no image or video data in any request.
+**Not verified:** the gaze path end to end — WebGazer fetches its face detector from `tfhub.dev`,
+which this environment blocks, so `webgazer.begin()` never reaches the camera here.
 
 **Added in the P0 pass:** `LICENSE` (AGPL-3.0, repo root), `NOTICE.md` (licence scope + bundled
 third-party licences), `PRIVACY.md` (**scaffold with TODO markers only — not publishable**).
@@ -123,6 +130,13 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 - `web_accessible_resources` exposes `src/content/**` to `<all_urls>`, letting any page enumerate the extension's modules. Worth narrowing; not yet done.
 
 ### `content.js`
+
+**Paragraph tracking is gaze-driven and this is the biggest remaining hole.**
+`comprehensionMonitor.enterParagraph()` / `leaveParagraph()` are called only from inside
+`onGaze()`. With the camera off — the default — they never fire, so there is no WPM baseline, no
+`speed_mismatch` signal and no reading-time expectation. **Scroll backtrack is the only telemetry
+signal that currently works camera-off.** Confirmed in the browser. Viewport-driven paragraph
+tracking is P2's first job.
 
 1708 lines in one IIFE (`__sra_main`). Contains: constants, runtime state, highlight persistence, state smoothing, module loader, settings, dark mode, AI fetch, popup positioning and rendering, keyboard shortcuts, the classify loop, the comprehension handler, and scroll listeners. Split into `orchestrator.js`, `ui-controller.js`, `state-engine.js`, `intervention-policy.js`. Add new logic to the new modules, never to `content.js`.
 
