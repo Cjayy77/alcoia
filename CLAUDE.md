@@ -25,7 +25,8 @@ TL_DR/
 ├── manifest.json              MV3, v0.2.0
 ├── background.js              105 lines — service worker
 ├── src/content/
-│   ├── content.js             ~1700 lines — MONOLITH, see below
+│   ├── content.js            ~1670 lines — still large, see below
+│   ├── ui-controller.js        ~385 — popups, highlight, toasts, dark mode (P6)
 │   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
 │   ├── telemetry/              P2 detectors — each exports { update(), signal() }
@@ -59,13 +60,14 @@ TL_DR/
 └── server/index.js            269 lines — Express + Groq proxy
 ```
 
-**Absent:** any build step, `_locales/`, CI, CONTRIBUTING, ESLint.
+**Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
 
 **Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 116 tests over the state
 engine, the interruption budget, the fusion of both pipelines, the P2 detectors, and the
 missing-key trap.
 `npm run test:browser` loads the extension unpacked in Chromium and runs the verification
-checklist below. `npm run lint` still does not exist; do not cite it as passing.
+checklist below. **`npm run lint` exists as of P6** (ESLint, flat config) and exits 0 — it is a
+defect linter, not a style linter, so warnings in untouched files are left visible on purpose.
 
 **Verified in a real browser (P1):** content script injects with no page errors; telemetry-only
 detection reaches the reader with the camera off (`State: struggling (conf 0.60, camera 0.00)`);
@@ -170,7 +172,15 @@ drives `enterParagraph`/`leaveParagraph` from scroll, focus and a 5s tick. `onGa
 paragraph timing — it only refines which element is under the reader. Verified camera-off in the
 browser: `speed_mismatch` and `regression` both fire now, where previously only scroll backtrack did.
 
-1708 lines in one IIFE (`__sra_main`). Contains: constants, runtime state, highlight persistence, state smoothing, module loader, settings, dark mode, AI fetch, popup positioning and rendering, keyboard shortcuts, the classify loop, the comprehension handler, and scroll listeners. Split into `orchestrator.js`, `ui-controller.js`, `state-engine.js`, `intervention-policy.js`. Add new logic to the new modules, never to `content.js`.
+~~1708 lines in one IIFE.~~ **~1670 as of P6**, after `ui-controller.js` took the popup
+lifecycle, paragraph highlight, toasts, nudge and dark mode. `ui-controller.js` **owns
+`openPopups`** — nothing else may mutate it, because the dedup and the `MAX_POPUPS` eviction both
+depend on it being the only record of what is on screen. Create cards through `reservePopup()` /
+`showPopup()`, never by hand.
+
+Still in `content.js` and still to extract into `orchestrator.js`: boot and module loading,
+settings, the engine subscriber, telemetry wiring, keyboard shortcuts, the classify loop, SPA
+navigation and session continuity. Add new logic to the new modules, never to `content.js`.
 
 ---
 
