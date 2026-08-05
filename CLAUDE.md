@@ -25,7 +25,9 @@ TL_DR/
 ├── manifest.json              MV3, v0.1.0
 ├── background.js              105 lines — service worker
 ├── src/content/
-│   ├── content.js             1708 lines — MONOLITH, see below
+│   ├── content.js             ~1700 lines — MONOLITH, see below
+│   ├── state-engine.js         ~250 — signal fusion, single state estimate (P1)
+│   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
 │   ├── gaze-utils.js           397 — WebGazer smoothing/EMA
 │   ├── reading-calibration.js  268 — WPM calibration flow
 │   ├── classifier.js           251 — GENERATED decision tree
@@ -48,7 +50,11 @@ TL_DR/
 └── server/index.js            269 lines — Express + Groq proxy
 ```
 
-**Absent:** package.json, any test, any build step, `_locales/`, CI, CONTRIBUTING.
+**Absent:** any build step, `_locales/`, CI, CONTRIBUTING, ESLint.
+
+**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 60 tests over the state
+engine, the interruption budget, the fusion of both pipelines, and the missing-key trap.
+`npm run lint` still does not exist; do not cite it as passing.
 
 **Added in the P0 pass:** `LICENSE` (AGPL-3.0, repo root), `NOTICE.md` (licence scope + bundled
 third-party licences), `PRIVACY.md` (**scaffold with TODO markers only — not publishable**).
@@ -62,15 +68,26 @@ compatible, but the paid-tier plan interacts with WebGazer's $1M threshold. See 
 
 ## How it currently works
 
-### Two parallel pipelines, not fused
+### Two parallel pipelines — fused in P1
 
-This is the central architectural problem.
+**This was the central architectural problem. It is now fixed.** Both pipelines feed
+`state-engine.js`, which produces one state, and `intervention-policy.js` decides whether that
+state earns an interruption. `content.js` has exactly one subscriber that can put something in
+front of the reader. The description below is kept because the two detectors still exist and
+still produce their own signals — what changed is that neither can act on its own.
+
+The hierarchy is enforced structurally, not by convention: telemetry may assert any state; gaze
+may assert **only** `absent`, and may corroborate a telemetry state to raise confidence. A gaze
+label of `confused` with nothing behind it resolves to `unknown` and is dropped. Covered by
+`tests/fusion-integration.test.js`.
 
 **Pipeline A — gaze.** `webgazer-bootstrap.js` injects WebGazer into the page's main world; `sra-page-bridge.js` relays samples back to the isolated content script via postMessage. `gaze-features.js` buffers points over a 2500 ms window, runs DBSCAN, computes 9 features. `content.js` (~line 1226) gates on `rawFeatures.gaze_quality < 0.25`, calls `classifyGazeState()`, smooths through a ring buffer (`getSmoothedState`, line 119), then looks up `COGNITIVE_STATE_ACTIONS` and fires `explain` / `simplify` / `nudge`.
 
 **Pipeline B — telemetry.** `comprehension-monitor.js` runs independently. On paragraph exit (`content.js` ~line 1100) it emits `speed_mismatch` or `backtrack` signals, which fire their *own* popups via a separate handler (~line 1118).
 
-Both can interrupt the same reader with no coordination. There is no shared state estimate. Merging them into one `state-engine.js` is priority work.
+~~Both can interrupt the same reader with no coordination.~~ Both now route through the engine and
+share one budget. `handleComprehensionSignal()` is a **renderer only** — never call it from a
+detector. New detectors call `stateEngine.update({ telemetry: signal })` and nothing else.
 
 ### `comprehension-monitor.js` — the asset
 
@@ -181,6 +198,13 @@ Reader attention is the scarcest resource here. A wrong interruption is worse th
 
 - Max one per 3 minutes; max five per session; never twice on the same paragraph; never on `unknown`.
 - Every interruption carries user-visible evidence — "You slowed down a lot here" — converting an inference into an observation.
+
+**Enforced in `intervention-policy.js` as of P1**, with tests. Two notes for anyone changing it:
+
+- `evaluate()` decides, `record()` spends. Call `record()` only once the interruption is actually
+  on screen, or a decision dropped downstream silently burns the budget.
+- Skimming interrupts only on `difficult` / `very_difficult` text. Skimming easy prose is a choice,
+  not a problem.
 
 ---
 
