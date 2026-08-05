@@ -48,7 +48,15 @@ TL_DR/
 └── server/index.js            269 lines — Express + Groq proxy
 ```
 
-**Absent:** LICENSE, PRIVACY.md, package.json, any test, any build step, `_locales/`, CI, CONTRIBUTING.
+**Absent:** package.json, any test, any build step, `_locales/`, CI, CONTRIBUTING.
+
+**Added in the P0 pass:** `LICENSE` (AGPL-3.0, repo root), `NOTICE.md` (licence scope + bundled
+third-party licences), `PRIVACY.md` (**scaffold with TODO markers only — not publishable**).
+
+**Licensing constraint discovered in P0:** `src/libs/webgazer.min.js` is **GPLv3** (LGPLv3 only for
+companies valued under $1M). The shipped extension is therefore a combined copyleft work — full
+corresponding source must be offered to anyone who receives it. AGPL-3.0 for the client stays
+compatible, but the paid-tier plan interacts with WebGazer's $1M threshold. See `NOTICE.md`.
 
 ---
 
@@ -88,12 +96,14 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 
 ### `classifier.js`
 
-- Header currently claims `Test accuracy: 0.851`. Trained on **synthetic** data (`gaze_dataset_v2.csv`, 2500 rows, 500/class). That number measures recovery of the generator's rules, not reading behaviour. Several leaves have `confidence: 1.000` — an overfitting signature on synthetic data.
+- Header records `Test accuracy: 0.851`, now carrying the full synthetic-data qualifier (P0 pass). Trained on **synthetic** data: 2500 clean rows (500/class), each duplicated with Gaussian noise → 5000 rows, 4000 train / 1000 test. That number measures recovery of the generator's rules, not reading behaviour. Several leaves have `confidence: 1.000` — an overfitting signature on synthetic data.
+- **The 0.851 is additionally inflated by train/test leakage.** The augmented rows are noise-perturbed duplicates of the clean rows and the split is random, so a row's noisy twin can sit in test while the original sits in train. Any honest retrain must split *before* augmenting.
 - The **root split is `scroll_delta_px`** — the one feature that isn't gaze. The model is already telling you telemetry carries the information.
 
 ### `manifest.json`
 
-- `<all_urls>` + `all_frames: true` + `match_about_blank` will draw manual Web Store review. Narrow `all_frames` to `false`; iframes are not where reading happens.
+- ~~`<all_urls>` + `all_frames: true` + `match_about_blank` will draw manual Web Store review.~~ **Fixed in P0** — `all_frames` is now `false` and `match_about_blank` is removed. `<all_urls>` remains (the extension has to read arbitrary pages) and still invites review.
+- `web_accessible_resources` exposes `src/content/**` to `<all_urls>`, letting any page enumerate the extension's modules. Worth narrowing; not yet done.
 
 ### `content.js`
 
@@ -107,7 +117,17 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 
 Remove those keys from the extractor without retraining and every comparison becomes `undefined <= X`, which evaluates to `false` **without throwing**. The classifier will not crash. It will silently route down one branch forever and keep emitting confident labels.
 
-**Required sequence:** retrain in `tldr classifier/tldr_classifier_v2.ipynb` against the reduced feature set, regenerate `classifier.js`, *then* delete from the extractor. Or add a guard that throws on any missing key. Do not delete first. Write a test for this exact failure mode.
+Verified empirically — `classifyGazeState({})`, with **no features at all**, returns
+`{ label: 'skimming', confidence: 0.722 }`. Dropping the three saccade/velocity keys from a
+focused-reading sample flips `focused (0.993)` to `skimming (1.000)`. Confident labels, zero data.
+
+**Required sequence:** retrain in `tldr classifier/tldr_classifier_training(1).ipynb` against the reduced feature set, regenerate `classifier.js`, *then* delete from the extractor. Or add a guard that throws on any missing key. Do not delete first. Write a test for this exact failure mode.
+
+⚠️ **Use the right notebook.** The tree currently shipping was exported from
+`tldr_classifier_training(1).ipynb` (noise-augmented, 5000 rows, 4000 train). It is *not* the
+export from `tldr_classifier_v2.ipynb`, which produces a different tree. Retraining in the wrong
+notebook silently replaces the model. Confirmed by diffing the shipped file against both exports:
+the body matches `tldr classifier/classifier(1).js`.
 
 ---
 
