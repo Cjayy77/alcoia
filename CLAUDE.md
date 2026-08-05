@@ -22,7 +22,7 @@ If a task appears to invert this hierarchy, stop and ask.
 
 ```
 TL_DR/
-├── manifest.json              MV3, v0.1.0
+├── manifest.json              MV3, v0.2.0
 ├── background.js              105 lines — service worker
 ├── src/content/
 │   ├── content.js             ~1700 lines — MONOLITH, see below
@@ -55,14 +55,15 @@ TL_DR/
 │   ├── session-tracker.js       76
 │   └── sra-page-bridge.js       41 — postMessage bridge, isolated↔main world
 ├── src/popup/                 popup.js 357, notes.js 197, + 6 HTML pages
-├── src/libs/                  webgazer.min.js, pdfjs, jszip, Merriweather woff2
+├── src/libs/                  webgazer.min.js (GPLv3), pdfjs, jszip — no fonts bundled
 └── server/index.js            269 lines — Express + Groq proxy
 ```
 
 **Absent:** any build step, `_locales/`, CI, CONTRIBUTING, ESLint.
 
-**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 60 tests over the state
-engine, the interruption budget, the fusion of both pipelines, and the missing-key trap.
+**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 116 tests over the state
+engine, the interruption budget, the fusion of both pipelines, the P2 detectors, and the
+missing-key trap.
 `npm run test:browser` loads the extension unpacked in Chromium and runs the verification
 checklist below. `npm run lint` still does not exist; do not cite it as passing.
 
@@ -75,10 +76,12 @@ which this environment blocks, so `webgazer.begin()` never reaches the camera he
 **Added in the P0 pass:** `LICENSE` (AGPL-3.0, repo root), `NOTICE.md` (licence scope + bundled
 third-party licences), `PRIVACY.md` (**scaffold with TODO markers only — not publishable**).
 
-**Licensing constraint discovered in P0:** `src/libs/webgazer.min.js` is **GPLv3** (LGPLv3 only for
-companies valued under $1M). The shipped extension is therefore a combined copyleft work — full
-corresponding source must be offered to anyone who receives it. AGPL-3.0 for the client stays
-compatible, but the paid-tier plan interacts with WebGazer's $1M threshold. See `NOTICE.md`.
+**Licensing constraint discovered in P0:** `src/libs/webgazer.min.js` is **GPLv3**. The shipped
+extension is therefore a combined copyleft work — full corresponding source must be offered to
+anyone who receives it, and the client can never be closed-source while WebGazer ships in the
+package. AGPL-3.0 stays compatible. ~~The paid-tier plan interacts with WebGazer's $1M
+threshold.~~ **It does not** — see the licensing section at the end of this file. `NOTICE.md` has
+the detail.
 
 ---
 
