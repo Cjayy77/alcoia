@@ -32,7 +32,9 @@ TL_DR/
 │   │   ├── paragraph-tracker.js   ~110 — viewport-driven paragraph timing
 │   │   ├── scroll-regression.js    ~75 — paragraph-index returns + latency signature
 │   │   ├── interaction-signals.js  ~95 — selection, copy, blur/return
-│   │   └── scroll-dynamics.js      ~60 — scroll jerk
+│   │   ├── scroll-dynamics.js      ~60 — scroll jerk
+│   │   ├── text-difficulty.js     ~135 — FK + syntactic load, works non-English
+│   │   └── residual-distribution.js ~55 — per-reader pace thresholds
 │   ├── gaze-utils.js           397 — WebGazer smoothing/EMA
 │   ├── reading-calibration.js  268 — WPM calibration flow
 │   ├── classifier.js           251 — GENERATED decision tree
@@ -103,9 +105,20 @@ detector. New detectors call `stateEngine.update({ telemetry: signal })` and not
 
 ### `comprehension-monitor.js` — the asset
 
-Already implements: Flesch-Kincaid per paragraph, expected reading time from word count × difficulty, a **personal WPM baseline** as a running median persisted in `chrome.storage` and seedable from `reading-calibration.js`, speed-mismatch detection in both directions, and scroll backtrack.
+Already implements: difficulty per paragraph, expected reading time from word count × difficulty, a **personal WPM baseline** as a running median persisted in `chrome.storage` and seedable from `reading-calibration.js`, speed-mismatch detection in both directions, and scroll backtrack.
 
-This is the correct primary sensor. It needs promoting, not rewriting. Note it correctly skips FK on non-English pages — which means **non-English pages currently have almost no primary signal.**
+This is the correct primary sensor. It was promoted in P2, not rewritten. Two changes:
+
+- **Difficulty now comes from `telemetry/text-difficulty.js`** — Flesch-Kincaid weighted 0.6 with
+  syntactic structure (clause length, sentence length, subordination, passives) at 0.4. On
+  non-English pages FK is skipped and structure carries the whole score. ~~Non-English pages have
+  almost no primary signal.~~ They now get one; previously every FK-based check was skipped and
+  those pages produced nothing but scroll backtrack.
+- **Thresholds are per-reader.** After ~8 paragraphs, `telemetry/residual-distribution.js` judges
+  "too fast"/"too slow" by z-score against the reader's own spread of reading-rate residuals
+  instead of the fixed 0.30/0.50 ratios, which fall back only until there is enough history. A
+  reader who consistently runs at 0.6x the model is not struggling on every paragraph, and the
+  fixed cutoff said they were.
 
 ### Server
 
