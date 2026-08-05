@@ -280,3 +280,97 @@ Then load unpacked and confirm manually:
 - No network request contains image or video data
 
 Report what you verified, not what you believe should work.
+
+---
+
+## Third-party licensing — read before adding, removing or replacing dependencies
+
+**`src/libs/webgazer.min.js` is GPLv3.** Companies have an LGPLv3 option only while valuation is
+under $1,000,000.
+
+Consequences, in order of importance:
+
+1. **While WebGazer ships inside the extension package, the client can never be closed-source.**
+   The shipped extension is a combined copyleft work. This is permanent and is the only
+   consequence that constrains future decisions.
+2. **AGPL-3.0 is compatible** — §13 of GPLv3 and §13 of AGPLv3 each permit the combination. The
+   current LICENSE is correct and does not need changing.
+3. **The $1M threshold is irrelevant to this project.** The LGPL option exists to allow
+   proprietary linking. This project is copyleft by choice, so crossing the threshold simply
+   leaves it under GPLv3, which is where it already is. Do not treat the threshold as a blocker
+   on billing, pricing or incorporation.
+4. **The server is unaffected.** It is a separate program communicating over a network API in a
+   separate process. WebGazer's copyleft does not reach it. Keeping it in a private repo is
+   unaffected by this.
+5. **AGPL's network clause does almost nothing here.** A browser extension runs on the user's
+   machine; the user already receives the code, and nobody deploys an extension as a network
+   service. The protection comes from ordinary distribution copyleft. Do not cite the network
+   clause as a deterrent in any documentation.
+
+**WebGazer is unmaintained.** Official maintenance ended 24 February 2026. It remains functional;
+updates are not guaranteed.
+
+**Exit path, logged but not scheduled.** Gaze is now demoted to presence and coarse region. A small
+MediaPipe FaceMesh implementation (Apache 2.0) would cover what remains, remove the GPL obligation,
+and drop a dead dependency. Do not undertake this without asking.
+
+**Fonts.** ~~Merriweather (`src/libs/`) is SIL OFL 1.1 and needs `OFL.txt` shipped alongside.~~
+**No font is bundled.** The two `Merriweather-*.woff2` files were 82-byte text placeholders, not
+fonts, and nothing referenced Merriweather anywhere in the codebase; they have been removed. There
+is nothing to license yet — add `OFL.txt` alongside the first real font binary. Fraunces is
+currently fetched from `fonts.googleapis.com` on every page the reader visits. See `NOTICE.md`.
+
+---
+
+## Accuracy figures — corrected count
+
+At least eight figures exist across the project, not four:
+
+| Figure | Location |
+|---|---|
+| 0.851 | `src/content/classifier.js` (shipped) |
+| 0.909 | `tldr classifier/classifier.js` |
+| 88% | notebooks |
+| 91.5% | notebooks |
+| ~65–70% | notebooks |
+| 0.835 / 0.884 / 0.897 | notebook outputs |
+| 92% | report |
+| "75–82% real-world" | marketing drafts |
+
+**The shipped figure is inflated by construction, not merely synthetic.** The training notebook
+duplicates every row with Gaussian noise and then performs a random 80/20 split, so a row's noisy
+twin sits in test while the original sits in train. This is train/test leakage. 0.851 is therefore
+not a valid measure even of how well the tree recovers its own generator's rules. The qualifier in
+`classifier.js` says so.
+
+---
+
+## The trap — now empirically confirmed
+
+```
+classifyGazeState({})                   → { label: 'skimming', confidence: 0.722 }
+focused sample, 3 saccade keys removed  → focused (0.993) becomes skimming (1.000)
+```
+
+Confident labels from zero features, no exception thrown. Any work that touches the feature set
+must land the missing-key guard first. Pinned by `tests/classifier-missing-keys.test.js`.
+
+---
+
+## Revised phase order
+
+`package.json`, Vitest and the missing-key guard test come **before** P1, not with P6 — the
+Verification section of this file was unexecutable until they existed. Done as of P1.
+
+Order: P0 (done) → test harness (done) → P1 (done) → P2 (done) → P3 → P6 split → ship → P7 → P4 → P5.
+
+---
+
+## Working agreement with the repository owner
+
+- Open a PR for each phase. Reviewing a diff is how the owner retains control of a codebase an
+  agent is writing. Do not push directly to main.
+- One phase per session. If a diff cannot be read in one sitting, the phase was scoped too large —
+  split it.
+- Continue reporting what was verified versus what was assumed, and continue flagging where the
+  brief conflicts with the code. That behaviour is correct and should not be moderated.
