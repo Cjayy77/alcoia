@@ -10,7 +10,7 @@ TL;DR is a Chrome MV3 extension that notices when a reader is struggling with a 
 
 Signal hierarchy, in order of authority:
 
-1. **Reader responses** — answers to retrieval questions. Not yet built. The only ground truth in the system.
+1. **Reader responses** — answers to retrieval questions. **Built in P3** (`telemetry/response-signals.js`). The only ground truth in the system, and the engine gives them confidences above anything telemetry can produce, so an answer decides the state. A correct answer resolves to `on_pace` and stops the system pressing; a dismissal asserts nothing at all, because declining to be tested says nothing about comprehension.
 2. **Browser telemetry** — reading rate vs. text difficulty and personal baseline, scroll regressions, selection, blur, idle. Precise, always available, no permission needed. **Partly built** — see `comprehension-monitor.js`.
 3. **Webcam gaze** — coarse presence and region only. Currently the primary path, which is wrong. ~180 px error; several lines of text.
 
@@ -28,6 +28,7 @@ TL_DR/
 │   ├── content.js            ~1435 lines — host: UI glue, settings, boot (P6)
 │   ├── orchestrator.js         ~360 — detection pipeline, engine + budget (P6)
 │   ├── ui-controller.js        ~363 — popups, highlight, toasts, dark mode (P6)
+│   ├── question-card.js        ~160 — the retrieval question card (P3)
 │   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
 │   ├── telemetry/              P2 detectors — each exports { update(), signal() }
@@ -58,14 +59,15 @@ TL_DR/
 │   └── sra-page-bridge.js       41 — postMessage bridge, isolated↔main world
 ├── src/popup/                 popup.js 357, notes.js 197, + 6 HTML pages
 ├── src/libs/                  webgazer.min.js (GPLv3), pdfjs, jszip — no fonts bundled
-└── server/index.js            269 lines — Express + Groq proxy
+├── server/index.js            327 lines — Express + Groq proxy
+└── server/questions.js        ~185 — question generation + validation (P3, pure)
 ```
 
 **Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
 
-**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 116 tests over the state
-engine, the interruption budget, the fusion of both pipelines, the P2 detectors, and the
-missing-key trap.
+**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 188 tests over the state
+engine, the interruption budget, pipeline fusion, the P2 detectors, question generation and
+validation, response signals, session recall, the UI controller, and the missing-key trap.
 `npm run test:browser` loads the extension unpacked in Chromium and runs the verification
 checklist below. **`npm run lint` exists as of P6** (ESLint, flat config) and exits 0 — it is a
 defect linter, not a style linter, so warnings in untouched files are left visible on purpose.
@@ -130,7 +132,24 @@ This is the correct primary sensor. It was promoted in P2, not rewritten. Two ch
 
 ### Server
 
-Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Uses `llama-3.1-8b-instant`, escalating to `llama-3.3-70b-versatile` for some requests (line ~180). Rate-limited. There is **no question-generation endpoint** — that is the main gap.
+`POST /api/summarize` with modes, plus `/demo` and `/health`. Uses `llama-3.1-8b-instant`,
+escalating to `llama-3.3-70b-versatile` for some requests. Rate-limited.
+
+~~There is **no question-generation endpoint** — that is the main gap.~~ **`POST /api/questions`
+added in P3.** The logic lives in `server/questions.js` as a pure CommonJS module with no express
+dependency, so it is testable without standing a server up (`tests/questions.test.js`).
+
+The hard requirement is `span`: every question must cite, **verbatim**, the sentence in the
+passage containing its answer. Spans that do not appear in the passage are rejected outright — a
+model that cannot point at its evidence invented the question, and an invented question asked of
+a struggling reader is worse than none. When nothing survives validation the endpoint returns 422
+and the client falls back to an explanation. Responses are cached by content hash (LRU, 24h) so
+the same paragraph costs one generation, and questions get their own tighter rate-limit bucket
+(10/min) since they cost more than summaries.
+
+Two prompts previously asserted "the reader's eye movements indicate they are confused". With the
+camera off by default that is usually false, and it is a detection claim embedded in a prompt.
+Both now describe the observation (slowed down, went back) rather than the sensor.
 
 ---
 
@@ -241,7 +260,7 @@ Four different accuracy figures exist across this project's materials: 0.851 (`c
 
 - **Camera off by default.** Requesting webcam at install destroys conversion.
 - **Telemetry is the primary path.** Gaze is a secondary sensor contributing presence and coarse region only.
-- **Questions, not summaries, are the primary intervention.** Explanation is the fallback after a wrong answer. Follows D'Mello et al. (2016), whose RCT found just-in-time questioning recovered comprehension losses (d = 0.47). Summarising removes the desirable difficulty that produces retention.
+- **Questions, not summaries, are the primary intervention.** Explanation is the fallback after a wrong answer. Follows D'Mello et al. (2016), whose RCT found just-in-time questioning recovered comprehension losses (d = 0.47). Summarising removes the desirable difficulty that produces retention. **Implemented in P3** — `STATE_ACTIONS` maps `struggling` and `skimming` to `ask`, and the explanation card is reached only after a wrong answer or when no question could be generated.
 - **State names describe observations:** `on_pace`, `skimming`, `struggling`, `drifting`, `absent`, `unknown`. Do not reintroduce `confused` or `overloaded` — they are unmeasurable internal states.
 - **AGPL-3.0 for the client; `server/` moves to a separate private repo.**
 - Fonts: **Literata** (body) + **Inter** (UI). Fraunces and Merriweather are being retired.
