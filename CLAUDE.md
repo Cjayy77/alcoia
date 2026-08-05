@@ -34,7 +34,9 @@ TL_DR/
 │   │   ├── interaction-signals.js  ~95 — selection, copy, blur/return
 │   │   ├── scroll-dynamics.js      ~60 — scroll jerk
 │   │   ├── text-difficulty.js     ~135 — FK + syntactic load, works non-English
-│   │   └── residual-distribution.js ~55 — per-reader pace thresholds
+│   │   ├── residual-distribution.js ~55 — per-reader pace thresholds
+│   │   ├── cursor-tracking.js      ~95 — mouse as reading pointer when it is one
+│   │   └── progression-entropy.js  ~80 — session shape (for the P4 receipt)
 │   ├── gaze-utils.js           397 — WebGazer smoothing/EMA
 │   ├── reading-calibration.js  268 — WPM calibration flow
 │   ├── classifier.js           251 — GENERATED decision tree
@@ -243,6 +245,10 @@ Reader attention is the scarcest resource here. A wrong interruption is worse th
 
 - ES modules; no bundler-specific syntax in content scripts. Modules loaded dynamically via `loadModule()` in `content.js`.
 - New telemetry detectors go in `src/content/telemetry/`, each exporting `{ update(), signal() }`.
+  Register the signal type in `state-engine.js`: assertable types get a branch in `fromTelemetry()`
+  with a confidence and an evidence sentence; corroboration-only types go in `CORROBORATING_TYPES`
+  plus `CORROBORATION`, and a `CORROBORATION_GUARD` if the signal is only meaningful for one
+  subtype. An unregistered type is silently ignored — `fromTelemetry()` returns null for it.
 - Keep modules under ~300 lines.
 - Tests in Vitest. Priority: feature extractors against fixtures, state engine against synthetic sequences, interruption budget, and the missing-key guard above.
 - No new runtime dependencies without asking.
