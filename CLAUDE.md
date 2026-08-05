@@ -26,8 +26,13 @@ TL_DR/
 ├── background.js              105 lines — service worker
 ├── src/content/
 │   ├── content.js             ~1700 lines — MONOLITH, see below
-│   ├── state-engine.js         ~250 — signal fusion, single state estimate (P1)
+│   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
+│   ├── telemetry/              P2 detectors — each exports { update(), signal() }
+│   │   ├── paragraph-tracker.js   ~110 — viewport-driven paragraph timing
+│   │   ├── scroll-regression.js    ~75 — paragraph-index returns + latency signature
+│   │   ├── interaction-signals.js  ~95 — selection, copy, blur/return
+│   │   └── scroll-dynamics.js      ~60 — scroll jerk
 │   ├── gaze-utils.js           397 — WebGazer smoothing/EMA
 │   ├── reading-calibration.js  268 — WPM calibration flow
 │   ├── classifier.js           251 — GENERATED decision tree
@@ -131,12 +136,11 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 
 ### `content.js`
 
-**Paragraph tracking is gaze-driven and this is the biggest remaining hole.**
-`comprehensionMonitor.enterParagraph()` / `leaveParagraph()` are called only from inside
-`onGaze()`. With the camera off — the default — they never fire, so there is no WPM baseline, no
-`speed_mismatch` signal and no reading-time expectation. **Scroll backtrack is the only telemetry
-signal that currently works camera-off.** Confirmed in the browser. Viewport-driven paragraph
-tracking is P2's first job.
+~~Paragraph tracking is gaze-driven.~~ **Fixed in P2.** `telemetry/paragraph-tracker.js` picks the
+paragraph crossing the reading line (0.4 of viewport height) and `syncParagraph()` in `content.js`
+drives `enterParagraph`/`leaveParagraph` from scroll, focus and a 5s tick. `onGaze()` no longer owns
+paragraph timing — it only refines which element is under the reader. Verified camera-off in the
+browser: `speed_mismatch` and `regression` both fire now, where previously only scroll backtrack did.
 
 1708 lines in one IIFE (`__sra_main`). Contains: constants, runtime state, highlight persistence, state smoothing, module loader, settings, dark mode, AI fetch, popup positioning and rendering, keyboard shortcuts, the classify loop, the comprehension handler, and scroll listeners. Split into `orchestrator.js`, `ui-controller.js`, `state-engine.js`, `intervention-policy.js`. Add new logic to the new modules, never to `content.js`.
 
