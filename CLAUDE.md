@@ -25,8 +25,9 @@ TL_DR/
 ├── manifest.json              MV3, v0.2.0
 ├── background.js              105 lines — service worker
 ├── src/content/
-│   ├── content.js            ~1670 lines — still large, see below
-│   ├── ui-controller.js        ~385 — popups, highlight, toasts, dark mode (P6)
+│   ├── content.js            ~1435 lines — host: UI glue, settings, boot (P6)
+│   ├── orchestrator.js         ~360 — detection pipeline, engine + budget (P6)
+│   ├── ui-controller.js        ~363 — popups, highlight, toasts, dark mode (P6)
 │   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
 │   ├── telemetry/              P2 detectors — each exports { update(), signal() }
@@ -172,15 +173,26 @@ drives `enterParagraph`/`leaveParagraph` from scroll, focus and a 5s tick. `onGa
 paragraph timing — it only refines which element is under the reader. Verified camera-off in the
 browser: `speed_mismatch` and `regression` both fire now, where previously only scroll backtrack did.
 
-~~1708 lines in one IIFE.~~ **~1670 as of P6**, after `ui-controller.js` took the popup
-lifecycle, paragraph highlight, toasts, nudge and dark mode. `ui-controller.js` **owns
-`openPopups`** — nothing else may mutate it, because the dedup and the `MAX_POPUPS` eviction both
-depend on it being the only record of what is on screen. Create cards through `reservePopup()` /
-`showPopup()`, never by hand.
+~~1708 lines in one IIFE.~~ **~1435 as of P6**, after two extractions:
 
-Still in `content.js` and still to extract into `orchestrator.js`: boot and module loading,
-settings, the engine subscriber, telemetry wiring, keyboard shortcuts, the classify loop, SPA
-navigation and session continuity. Add new logic to the new modules, never to `content.js`.
+- **`orchestrator.js` decides.** It owns the telemetry detectors, the state engine, the
+  interruption budget, the one engine subscriber and the gaze classify loop. It does not render:
+  when an interruption is allowed it calls `host.onIntervention()` and takes a boolean back
+  saying whether anything reached the screen. The budget is spent only on a yes.
+- **`ui-controller.js` renders.** It owns `openPopups` — nothing else may mutate that map,
+  because the dedup and the `MAX_POPUPS` eviction both depend on it being the only record of
+  what is on screen. Create cards through `reservePopup()` / `showPopup()`, never by hand.
+
+`content.js` is now the host: module loading, settings and their storage listener, the AI fetch,
+text highlighting, word lookup, selection handling, keyboard shortcuts, WebGazer bootstrap, SPA
+navigation, session continuity, and the render callbacks the orchestrator calls.
+
+Settings still live in `content.js` as loose `let`s, so both modules read them through accessors
+(`settings()` / `getSettings()`) rather than capturing copies — the storage listener reassigns
+them at runtime and a captured copy goes stale silently. Extracting a real settings module is
+the obvious next cleanup.
+
+Add new logic to the new modules, never to `content.js`.
 
 ---
 
