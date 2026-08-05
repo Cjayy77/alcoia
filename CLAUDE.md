@@ -26,8 +26,17 @@ TL_DR/
 ├── background.js              105 lines — service worker
 ├── src/content/
 │   ├── content.js             ~1700 lines — MONOLITH, see below
-│   ├── state-engine.js         ~250 — signal fusion, single state estimate (P1)
+│   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
+│   ├── telemetry/              P2 detectors — each exports { update(), signal() }
+│   │   ├── paragraph-tracker.js   ~110 — viewport-driven paragraph timing
+│   │   ├── scroll-regression.js    ~75 — paragraph-index returns + latency signature
+│   │   ├── interaction-signals.js  ~95 — selection, copy, blur/return
+│   │   ├── scroll-dynamics.js      ~60 — scroll jerk
+│   │   ├── text-difficulty.js     ~135 — FK + syntactic load, works non-English
+│   │   ├── residual-distribution.js ~55 — per-reader pace thresholds
+│   │   ├── cursor-tracking.js      ~95 — mouse as reading pointer when it is one
+│   │   └── progression-entropy.js  ~80 — session shape (for the P4 receipt)
 │   ├── gaze-utils.js           397 — WebGazer smoothing/EMA
 │   ├── reading-calibration.js  268 — WPM calibration flow
 │   ├── classifier.js           251 — GENERATED decision tree
@@ -54,7 +63,14 @@ TL_DR/
 
 **Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 60 tests over the state
 engine, the interruption budget, the fusion of both pipelines, and the missing-key trap.
-`npm run lint` still does not exist; do not cite it as passing.
+`npm run test:browser` loads the extension unpacked in Chromium and runs the verification
+checklist below. `npm run lint` still does not exist; do not cite it as passing.
+
+**Verified in a real browser (P1):** content script injects with no page errors; telemetry-only
+detection reaches the reader with the camera off (`State: struggling (conf 0.60, camera 0.00)`);
+zero `getUserMedia` calls when the camera is off; no image or video data in any request.
+**Not verified:** the gaze path end to end — WebGazer fetches its face detector from `tfhub.dev`,
+which this environment blocks, so `webgazer.begin()` never reaches the camera here.
 
 **Added in the P0 pass:** `LICENSE` (AGPL-3.0, repo root), `NOTICE.md` (licence scope + bundled
 third-party licences), `PRIVACY.md` (**scaffold with TODO markers only — not publishable**).
@@ -91,9 +107,20 @@ detector. New detectors call `stateEngine.update({ telemetry: signal })` and not
 
 ### `comprehension-monitor.js` — the asset
 
-Already implements: Flesch-Kincaid per paragraph, expected reading time from word count × difficulty, a **personal WPM baseline** as a running median persisted in `chrome.storage` and seedable from `reading-calibration.js`, speed-mismatch detection in both directions, and scroll backtrack.
+Already implements: difficulty per paragraph, expected reading time from word count × difficulty, a **personal WPM baseline** as a running median persisted in `chrome.storage` and seedable from `reading-calibration.js`, speed-mismatch detection in both directions, and scroll backtrack.
 
-This is the correct primary sensor. It needs promoting, not rewriting. Note it correctly skips FK on non-English pages — which means **non-English pages currently have almost no primary signal.**
+This is the correct primary sensor. It was promoted in P2, not rewritten. Two changes:
+
+- **Difficulty now comes from `telemetry/text-difficulty.js`** — Flesch-Kincaid weighted 0.6 with
+  syntactic structure (clause length, sentence length, subordination, passives) at 0.4. On
+  non-English pages FK is skipped and structure carries the whole score. ~~Non-English pages have
+  almost no primary signal.~~ They now get one; previously every FK-based check was skipped and
+  those pages produced nothing but scroll backtrack.
+- **Thresholds are per-reader.** After ~8 paragraphs, `telemetry/residual-distribution.js` judges
+  "too fast"/"too slow" by z-score against the reader's own spread of reading-rate residuals
+  instead of the fixed 0.30/0.50 ratios, which fall back only until there is enough history. A
+  reader who consistently runs at 0.6x the model is not struggling on every paragraph, and the
+  fixed cutoff said they were.
 
 ### Server
 
@@ -110,6 +137,16 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 - **Fallback constants** (`200`, `50`, `80`, `30`, `0.1`, `200`) are all focused-looking. When data is sparse the extractor fabricates plausible focused-reading features instead of abstaining.
 - **DBSCAN `eps: 80`** is below the tracker error, so it clusters noise. The documented fallback comment — "a noisy classification is better than no classification" — is backwards for a system that acts on its output.
 - **Keep:** `gaze_drift_px`. Dispersion is the one gaze measure with consistent support in the literature.
+- **Added in P2:** `on_page_fraction` (share of samples inside the padded text-column rect) and
+  `face_present`, plus a `presence()` method that reports even below `MIN_POINTS` — `computeFeatures()`
+  returns null there, so absence was previously unobservable from the extractor. Both abstain rather
+  than defaulting: `on_page_fraction` is `null` when there is no content rect. These are the only
+  gaze questions a ~180px tracker can answer honestly, and they are what the engine consumes.
+- **Still not done — blocked.** Deleting `saccade_length`, `saccade_std` and `velocity_mean` requires
+  retraining first (see THE TRAP), and retraining replaces the classifier, which needs human
+  approval. `line_reread_count` is superseded by `telemetry/scroll-regression.js` for decisions, but
+  the feature still exists and still feeds the classifier — removing it is part of the same blocked
+  deletion.
 
 ### `classifier.js`
 
@@ -123,6 +160,12 @@ Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Us
 - `web_accessible_resources` exposes `src/content/**` to `<all_urls>`, letting any page enumerate the extension's modules. Worth narrowing; not yet done.
 
 ### `content.js`
+
+~~Paragraph tracking is gaze-driven.~~ **Fixed in P2.** `telemetry/paragraph-tracker.js` picks the
+paragraph crossing the reading line (0.4 of viewport height) and `syncParagraph()` in `content.js`
+drives `enterParagraph`/`leaveParagraph` from scroll, focus and a 5s tick. `onGaze()` no longer owns
+paragraph timing — it only refines which element is under the reader. Verified camera-off in the
+browser: `speed_mismatch` and `regression` both fire now, where previously only scroll backtrack did.
 
 1708 lines in one IIFE (`__sra_main`). Contains: constants, runtime state, highlight persistence, state smoothing, module loader, settings, dark mode, AI fetch, popup positioning and rendering, keyboard shortcuts, the classify loop, the comprehension handler, and scroll listeners. Split into `orchestrator.js`, `ui-controller.js`, `state-engine.js`, `intervention-policy.js`. Add new logic to the new modules, never to `content.js`.
 
@@ -212,6 +255,10 @@ Reader attention is the scarcest resource here. A wrong interruption is worse th
 
 - ES modules; no bundler-specific syntax in content scripts. Modules loaded dynamically via `loadModule()` in `content.js`.
 - New telemetry detectors go in `src/content/telemetry/`, each exporting `{ update(), signal() }`.
+  Register the signal type in `state-engine.js`: assertable types get a branch in `fromTelemetry()`
+  with a confidence and an evidence sentence; corroboration-only types go in `CORROBORATING_TYPES`
+  plus `CORROBORATION`, and a `CORROBORATION_GUARD` if the signal is only meaningful for one
+  subtype. An unregistered type is silently ignored — `fromTelemetry()` returns null for it.
 - Keep modules under ~300 lines.
 - Tests in Vitest. Priority: feature extractors against fixtures, state engine against synthetic sequences, interruption budget, and the missing-key guard above.
 - No new runtime dependencies without asking.
