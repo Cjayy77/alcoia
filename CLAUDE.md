@@ -29,6 +29,7 @@ TL_DR/
 │   ├── orchestrator.js         ~360 — detection pipeline, engine + budget (P6)
 │   ├── ui-controller.js        ~363 — popups, highlight, toasts, dark mode (P6)
 │   ├── question-card.js        ~160 — the retrieval question card (P3)
+│   ├── receipt.js              ~290 — reader-owned session record + preview (P4)
 │   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
 │   ├── telemetry/              P2 detectors — each exports { update(), signal() }
@@ -60,14 +61,16 @@ TL_DR/
 ├── src/popup/                 popup.js 357, notes.js 197, + 6 HTML pages
 ├── src/libs/                  webgazer.min.js (GPLv3), pdfjs, jszip — no fonts bundled
 ├── server/index.js            327 lines — Express + Groq proxy
-└── server/questions.js        ~185 — question generation + validation (P3, pure)
+├── server/questions.js        ~185 — question generation + validation (P3, pure)
+└── server/receipt-signing.js   ~85 — HMAC tamper-evidence for receipts (P4, pure)
 ```
 
 **Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
 
-**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 188 tests over the state
+**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 212 tests over the state
 engine, the interruption budget, pipeline fusion, the P2 detectors, question generation and
-validation, response signals, session recall, the UI controller, and the missing-key trap.
+validation, response signals, session recall, the receipt and its signing, the UI controller,
+and the missing-key trap.
 `npm run test:browser` loads the extension unpacked in Chromium and runs the verification
 checklist below. **`npm run lint` exists as of P6** (ESLint, flat config) and exits 0 — it is a
 defect linter, not a style linter, so warnings in untouched files are left visible on purpose.
@@ -276,6 +279,35 @@ Four different accuracy figures exist across this project's materials: 0.851 (`c
 - Anything touching payments or user PII.
 
 Stop and ask rather than proceeding.
+
+---
+
+## The receipt (P4)
+
+`receipt.js` builds a reader-owned record and shows it in a preview panel. Alt+I, or the
+message API. Nothing runs on a timer and nothing leaves the machine without a click.
+
+**What a signature proves, exactly.** A valid signature means the receipt is byte-for-byte what
+the server issued. It proves nothing about whether the reading happened — the figures come from
+the reader's own browser, and a modified extension could send anything. Wording shown to anyone
+must say "unaltered since issued", never "verified" or "authentic". The caveat is a field of the
+artifact itself (`receipt.caveat`) so it travels with the file. Anything stronger would require
+measuring somewhere the reader does not control, which is the covert monitoring this product
+refuses to build.
+
+**The recall block is the substance.** `receiptIsSubstantive()` is false when nothing was
+answered, and the panel says so in those words: coverage alone records that pages were scrolled
+through, which is not evidence of reading and is trivial to fake.
+
+**`auditReceipt()`** is a backstop for invariant 6. It walks the artifact and rejects anything
+that looks like raw sensor data or a full URL, and the panel refuses to present a receipt that
+fails. Covered by `tests/receipt.test.js`; the browser check asserts no URL and no gaze keys
+reach the panel.
+
+Signing is HMAC-SHA256 with `RECEIPT_SECRET`, so verification goes back through the server and
+the key never leaves it. Asymmetric signing would let third parties verify offline; that is a
+human decision, not a default to slip in. `POST /api/receipt/sign` and `/api/receipt/verify`
+store nothing.
 
 ---
 
