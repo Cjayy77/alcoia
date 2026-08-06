@@ -10,7 +10,7 @@ TL;DR is a Chrome MV3 extension that notices when a reader is struggling with a 
 
 Signal hierarchy, in order of authority:
 
-1. **Reader responses** — answers to retrieval questions. Not yet built. The only ground truth in the system.
+1. **Reader responses** — answers to retrieval questions. **Built in P3** (`telemetry/response-signals.js`). The only ground truth in the system, and the engine gives them confidences above anything telemetry can produce, so an answer decides the state. A correct answer resolves to `on_pace` and stops the system pressing; a dismissal asserts nothing at all, because declining to be tested says nothing about comprehension.
 2. **Browser telemetry** — reading rate vs. text difficulty and personal baseline, scroll regressions, selection, blur, idle. Precise, always available, no permission needed. **Partly built** — see `comprehension-monitor.js`.
 3. **Webcam gaze** — coarse presence and region only. Currently the primary path, which is wrong. ~180 px error; several lines of text.
 
@@ -22,10 +22,13 @@ If a task appears to invert this hierarchy, stop and ask.
 
 ```
 TL_DR/
-├── manifest.json              MV3, v0.1.0
+├── manifest.json              MV3, v0.2.0
 ├── background.js              105 lines — service worker
 ├── src/content/
-│   ├── content.js             ~1700 lines — MONOLITH, see below
+│   ├── content.js            ~1435 lines — host: UI glue, settings, boot (P6)
+│   ├── orchestrator.js         ~360 — detection pipeline, engine + budget (P6)
+│   ├── ui-controller.js        ~363 — popups, highlight, toasts, dark mode (P6)
+│   ├── question-card.js        ~160 — the retrieval question card (P3)
 │   ├── state-engine.js         ~330 — signal fusion, single state estimate (P1/P2)
 │   ├── intervention-policy.js  ~130 — interruption budget, one place (P1)
 │   ├── telemetry/              P2 detectors — each exports { update(), signal() }
@@ -55,16 +58,19 @@ TL_DR/
 │   ├── session-tracker.js       76
 │   └── sra-page-bridge.js       41 — postMessage bridge, isolated↔main world
 ├── src/popup/                 popup.js 357, notes.js 197, + 6 HTML pages
-├── src/libs/                  webgazer.min.js, pdfjs, jszip, Merriweather woff2
-└── server/index.js            269 lines — Express + Groq proxy
+├── src/libs/                  webgazer.min.js (GPLv3), pdfjs, jszip — no fonts bundled
+├── server/index.js            327 lines — Express + Groq proxy
+└── server/questions.js        ~185 — question generation + validation (P3, pure)
 ```
 
-**Absent:** any build step, `_locales/`, CI, CONTRIBUTING, ESLint.
+**Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
 
-**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 60 tests over the state
-engine, the interruption budget, the fusion of both pipelines, and the missing-key trap.
+**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 188 tests over the state
+engine, the interruption budget, pipeline fusion, the P2 detectors, question generation and
+validation, response signals, session recall, the UI controller, and the missing-key trap.
 `npm run test:browser` loads the extension unpacked in Chromium and runs the verification
-checklist below. `npm run lint` still does not exist; do not cite it as passing.
+checklist below. **`npm run lint` exists as of P6** (ESLint, flat config) and exits 0 — it is a
+defect linter, not a style linter, so warnings in untouched files are left visible on purpose.
 
 **Verified in a real browser (P1):** content script injects with no page errors; telemetry-only
 detection reaches the reader with the camera off (`State: struggling (conf 0.60, camera 0.00)`);
@@ -75,10 +81,12 @@ which this environment blocks, so `webgazer.begin()` never reaches the camera he
 **Added in the P0 pass:** `LICENSE` (AGPL-3.0, repo root), `NOTICE.md` (licence scope + bundled
 third-party licences), `PRIVACY.md` (**scaffold with TODO markers only — not publishable**).
 
-**Licensing constraint discovered in P0:** `src/libs/webgazer.min.js` is **GPLv3** (LGPLv3 only for
-companies valued under $1M). The shipped extension is therefore a combined copyleft work — full
-corresponding source must be offered to anyone who receives it. AGPL-3.0 for the client stays
-compatible, but the paid-tier plan interacts with WebGazer's $1M threshold. See `NOTICE.md`.
+**Licensing constraint discovered in P0:** `src/libs/webgazer.min.js` is **GPLv3**. The shipped
+extension is therefore a combined copyleft work — full corresponding source must be offered to
+anyone who receives it, and the client can never be closed-source while WebGazer ships in the
+package. AGPL-3.0 stays compatible. ~~The paid-tier plan interacts with WebGazer's $1M
+threshold.~~ **It does not** — see the licensing section at the end of this file. `NOTICE.md` has
+the detail.
 
 ---
 
@@ -124,7 +132,24 @@ This is the correct primary sensor. It was promoted in P2, not rewritten. Two ch
 
 ### Server
 
-Single endpoint `POST /api/summarize` with modes, plus `/demo` and `/health`. Uses `llama-3.1-8b-instant`, escalating to `llama-3.3-70b-versatile` for some requests (line ~180). Rate-limited. There is **no question-generation endpoint** — that is the main gap.
+`POST /api/summarize` with modes, plus `/demo` and `/health`. Uses `llama-3.1-8b-instant`,
+escalating to `llama-3.3-70b-versatile` for some requests. Rate-limited.
+
+~~There is **no question-generation endpoint** — that is the main gap.~~ **`POST /api/questions`
+added in P3.** The logic lives in `server/questions.js` as a pure CommonJS module with no express
+dependency, so it is testable without standing a server up (`tests/questions.test.js`).
+
+The hard requirement is `span`: every question must cite, **verbatim**, the sentence in the
+passage containing its answer. Spans that do not appear in the passage are rejected outright — a
+model that cannot point at its evidence invented the question, and an invented question asked of
+a struggling reader is worse than none. When nothing survives validation the endpoint returns 422
+and the client falls back to an explanation. Responses are cached by content hash (LRU, 24h) so
+the same paragraph costs one generation, and questions get their own tighter rate-limit bucket
+(10/min) since they cost more than summaries.
+
+Two prompts previously asserted "the reader's eye movements indicate they are confused". With the
+camera off by default that is usually false, and it is a detection claim embedded in a prompt.
+Both now describe the observation (slowed down, went back) rather than the sensor.
 
 ---
 
@@ -167,7 +192,26 @@ drives `enterParagraph`/`leaveParagraph` from scroll, focus and a 5s tick. `onGa
 paragraph timing — it only refines which element is under the reader. Verified camera-off in the
 browser: `speed_mismatch` and `regression` both fire now, where previously only scroll backtrack did.
 
-1708 lines in one IIFE (`__sra_main`). Contains: constants, runtime state, highlight persistence, state smoothing, module loader, settings, dark mode, AI fetch, popup positioning and rendering, keyboard shortcuts, the classify loop, the comprehension handler, and scroll listeners. Split into `orchestrator.js`, `ui-controller.js`, `state-engine.js`, `intervention-policy.js`. Add new logic to the new modules, never to `content.js`.
+~~1708 lines in one IIFE.~~ **~1435 as of P6**, after two extractions:
+
+- **`orchestrator.js` decides.** It owns the telemetry detectors, the state engine, the
+  interruption budget, the one engine subscriber and the gaze classify loop. It does not render:
+  when an interruption is allowed it calls `host.onIntervention()` and takes a boolean back
+  saying whether anything reached the screen. The budget is spent only on a yes.
+- **`ui-controller.js` renders.** It owns `openPopups` — nothing else may mutate that map,
+  because the dedup and the `MAX_POPUPS` eviction both depend on it being the only record of
+  what is on screen. Create cards through `reservePopup()` / `showPopup()`, never by hand.
+
+`content.js` is now the host: module loading, settings and their storage listener, the AI fetch,
+text highlighting, word lookup, selection handling, keyboard shortcuts, WebGazer bootstrap, SPA
+navigation, session continuity, and the render callbacks the orchestrator calls.
+
+Settings still live in `content.js` as loose `let`s, so both modules read them through accessors
+(`settings()` / `getSettings()`) rather than capturing copies — the storage listener reassigns
+them at runtime and a captured copy goes stale silently. Extracting a real settings module is
+the obvious next cleanup.
+
+Add new logic to the new modules, never to `content.js`.
 
 ---
 
@@ -216,7 +260,7 @@ Four different accuracy figures exist across this project's materials: 0.851 (`c
 
 - **Camera off by default.** Requesting webcam at install destroys conversion.
 - **Telemetry is the primary path.** Gaze is a secondary sensor contributing presence and coarse region only.
-- **Questions, not summaries, are the primary intervention.** Explanation is the fallback after a wrong answer. Follows D'Mello et al. (2016), whose RCT found just-in-time questioning recovered comprehension losses (d = 0.47). Summarising removes the desirable difficulty that produces retention.
+- **Questions, not summaries, are the primary intervention.** Explanation is the fallback after a wrong answer. Follows D'Mello et al. (2016), whose RCT found just-in-time questioning recovered comprehension losses (d = 0.47). Summarising removes the desirable difficulty that produces retention. **Implemented in P3** — `STATE_ACTIONS` maps `struggling` and `skimming` to `ask`, and the explanation card is reached only after a wrong answer or when no question could be generated.
 - **State names describe observations:** `on_pace`, `skimming`, `struggling`, `drifting`, `absent`, `unknown`. Do not reintroduce `confused` or `overloaded` — they are unmeasurable internal states.
 - **AGPL-3.0 for the client; `server/` moves to a separate private repo.**
 - Fonts: **Literata** (body) + **Inter** (UI). Fraunces and Merriweather are being retired.
@@ -280,3 +324,97 @@ Then load unpacked and confirm manually:
 - No network request contains image or video data
 
 Report what you verified, not what you believe should work.
+
+---
+
+## Third-party licensing — read before adding, removing or replacing dependencies
+
+**`src/libs/webgazer.min.js` is GPLv3.** Companies have an LGPLv3 option only while valuation is
+under $1,000,000.
+
+Consequences, in order of importance:
+
+1. **While WebGazer ships inside the extension package, the client can never be closed-source.**
+   The shipped extension is a combined copyleft work. This is permanent and is the only
+   consequence that constrains future decisions.
+2. **AGPL-3.0 is compatible** — §13 of GPLv3 and §13 of AGPLv3 each permit the combination. The
+   current LICENSE is correct and does not need changing.
+3. **The $1M threshold is irrelevant to this project.** The LGPL option exists to allow
+   proprietary linking. This project is copyleft by choice, so crossing the threshold simply
+   leaves it under GPLv3, which is where it already is. Do not treat the threshold as a blocker
+   on billing, pricing or incorporation.
+4. **The server is unaffected.** It is a separate program communicating over a network API in a
+   separate process. WebGazer's copyleft does not reach it. Keeping it in a private repo is
+   unaffected by this.
+5. **AGPL's network clause does almost nothing here.** A browser extension runs on the user's
+   machine; the user already receives the code, and nobody deploys an extension as a network
+   service. The protection comes from ordinary distribution copyleft. Do not cite the network
+   clause as a deterrent in any documentation.
+
+**WebGazer is unmaintained.** Official maintenance ended 24 February 2026. It remains functional;
+updates are not guaranteed.
+
+**Exit path, logged but not scheduled.** Gaze is now demoted to presence and coarse region. A small
+MediaPipe FaceMesh implementation (Apache 2.0) would cover what remains, remove the GPL obligation,
+and drop a dead dependency. Do not undertake this without asking.
+
+**Fonts.** ~~Merriweather (`src/libs/`) is SIL OFL 1.1 and needs `OFL.txt` shipped alongside.~~
+**No font is bundled.** The two `Merriweather-*.woff2` files were 82-byte text placeholders, not
+fonts, and nothing referenced Merriweather anywhere in the codebase; they have been removed. There
+is nothing to license yet — add `OFL.txt` alongside the first real font binary. Fraunces is
+currently fetched from `fonts.googleapis.com` on every page the reader visits. See `NOTICE.md`.
+
+---
+
+## Accuracy figures — corrected count
+
+At least eight figures exist across the project, not four:
+
+| Figure | Location |
+|---|---|
+| 0.851 | `src/content/classifier.js` (shipped) |
+| 0.909 | `tldr classifier/classifier.js` |
+| 88% | notebooks |
+| 91.5% | notebooks |
+| ~65–70% | notebooks |
+| 0.835 / 0.884 / 0.897 | notebook outputs |
+| 92% | report |
+| "75–82% real-world" | marketing drafts |
+
+**The shipped figure is inflated by construction, not merely synthetic.** The training notebook
+duplicates every row with Gaussian noise and then performs a random 80/20 split, so a row's noisy
+twin sits in test while the original sits in train. This is train/test leakage. 0.851 is therefore
+not a valid measure even of how well the tree recovers its own generator's rules. The qualifier in
+`classifier.js` says so.
+
+---
+
+## The trap — now empirically confirmed
+
+```
+classifyGazeState({})                   → { label: 'skimming', confidence: 0.722 }
+focused sample, 3 saccade keys removed  → focused (0.993) becomes skimming (1.000)
+```
+
+Confident labels from zero features, no exception thrown. Any work that touches the feature set
+must land the missing-key guard first. Pinned by `tests/classifier-missing-keys.test.js`.
+
+---
+
+## Revised phase order
+
+`package.json`, Vitest and the missing-key guard test come **before** P1, not with P6 — the
+Verification section of this file was unexecutable until they existed. Done as of P1.
+
+Order: P0 (done) → test harness (done) → P1 (done) → P2 (done) → P3 → P6 split → ship → P7 → P4 → P5.
+
+---
+
+## Working agreement with the repository owner
+
+- Open a PR for each phase. Reviewing a diff is how the owner retains control of a codebase an
+  agent is writing. Do not push directly to main.
+- One phase per session. If a diff cannot be read in one sitting, the phase was scoped too large —
+  split it.
+- Continue reporting what was verified versus what was assumed, and continue flagging where the
+  brief conflicts with the code. That behaviour is correct and should not be moderated.
