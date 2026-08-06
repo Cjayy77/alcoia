@@ -67,7 +67,7 @@ TL_DR/
 
 **Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
 
-**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 212 tests over the state
+**Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 216 tests over the state
 engine, the interruption budget, pipeline fusion, the P2 detectors, question generation and
 validation, response signals, session recall, the receipt and its signing, the UI controller,
 and the missing-key trap.
@@ -418,6 +418,49 @@ duplicates every row with Gaussian noise and then performs a random 80/20 split,
 twin sits in test while the original sits in train. This is train/test leakage. 0.851 is therefore
 not a valid measure even of how well the tree recovers its own generator's rules. The qualifier in
 `classifier.js` says so.
+
+---
+
+## Known gaps in test coverage — read before trusting a green run
+
+The P6 refactor silently deleted the entire keyboard-shortcut handler and **every test passed**.
+ESLint caught it, not the suite. The lesson is not only "lint before refactor" — it is that the
+suite's *shape* has holes, and the keyboard handler was simply the first one to become visible.
+
+Closed since:
+
+- **Keyboard shortcuts** are now pressed in `npm run test:browser` — Alt+1/T/F/M/S/I/R and Esc.
+- **The classifier feature contract** (`tests/classifier-feature-contract.test.js`) compares the
+  keys the tree branches on against the keys the extractor emits, by reading both files. This is
+  the guard CLAUDE.md asked for. It cannot be caught by running the classifier, because the broken
+  case returns confident labels — that is the failure mode.
+
+Still open, and worth knowing when a green run tempts you:
+
+- No test drives a **full reading session** end to end with clock advancement — scroll, dwell,
+  regress, answer, across minutes. The budget is unit-tested against a fake clock and the browser
+  check runs ~20 seconds.
+- The **camera-on path is not a distinct case** in any test. `tfhub.dev` is blocked here, so
+  `webgazer.begin()` has never reached a camera in any run.
+- **Question quality is untested.** See below.
+
+---
+
+## Question quality — the untested thing that matters most
+
+The question pipeline is verified mechanically: `/api/questions` is hit, `/api/summarize` is not,
+an explanation follows only a wrong answer. All of that was against a canned endpoint.
+
+**Whether the questions are any good has never been checked.** A well-plumbed pipeline serving
+mediocre questions fails in a way that looks like "readers don't want interruptions" rather than
+"the questions were bad", and those are indistinguishable in retention metrics while having
+opposite fixes.
+
+`npm run questions:review -- --server http://localhost:3000 --file <path> --url <url>` runs real
+passages through the real endpoint and lays the output out for reading. It applies the checks that
+can be mechanised — span really in the passage, question/span lexical overlap (the word-matching
+tell), giveaway distractors, conspicuous option lengths — and flags rather than scores. Judging
+whether a question tests understanding is a human job. Do twenty varied pages before shipping.
 
 ---
 
