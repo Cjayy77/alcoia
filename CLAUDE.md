@@ -6,7 +6,7 @@ Repository context for agents. Read fully before any task. This file describes t
 
 ## Product intent
 
-TL;DR is a Chrome MV3 extension that notices when a reader is struggling with a page and intervenes. It is **not** primarily an eye-tracking product, despite what the current code structure implies.
+Alcoia is a Chrome MV3 extension that notices when a reader is struggling with a page and intervenes. It is **not** primarily an eye-tracking product, despite what the current code structure implies.
 
 Signal hierarchy, in order of authority:
 
@@ -21,7 +21,7 @@ If a task appears to invert this hierarchy, stop and ask.
 ## Actual repository state
 
 ```
-TL_DR/
+alcoia/
 ├── manifest.json              MV3, v0.2.0
 ├── background.js              105 lines — service worker
 ├── src/content/
@@ -58,14 +58,32 @@ TL_DR/
 │   ├── pptx-handler.js          78
 │   ├── session-tracker.js       76
 │   └── sra-page-bridge.js       41 — postMessage bridge, isolated↔main world
-├── src/popup/                 popup.js 357, notes.js 197, + 6 HTML pages
-├── src/libs/                  webgazer.min.js (GPLv3), pdfjs, jszip — no fonts bundled
+├── src/popup/                 popup.js ~330, notes.js 197, + 6 HTML pages
+├── src/styles/
+│   ├── fonts.css              ~105 — @font-face + the three type tokens (UI pass)
+│   ├── overlay.css            ~430 — everything drawn on top of a page the reader is reading
+│   ├── panel.css              ~175 — shared chrome for the extension's own pages (UI pass)
+│   └── popup.css               ~65 — legacy, only upgrade.html still links it
+├── src/libs/                  webgazer.min.js (GPLv3), pdfjs, jszip, fonts/ (SIL OFL 1.1)
 ├── server/index.js            327 lines — Express + Groq proxy
 ├── server/questions.js        ~185 — question generation + validation (P3, pure)
 └── server/receipt-signing.js   ~85 — HMAC tamper-evidence for receipts (P4, pure)
 ```
 
 **Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
+
+**Deleted in the UI pass, both dead:** `src/content/overlay.css` and `src/popup/popup.css`.
+Nothing loaded either. The first one mattered — it was where the P3 question card
+(`.sra-q-*`) and the P4 receipt (`.sra-receipt*`) rules lived, while `content.js` has only ever
+injected `src/styles/overlay.css`. **The primary intervention and the receipt were both
+rendering completely unstyled in the browser, and every test passed**, because the tests assert
+on structure and behaviour and never on whether a rule applies. Those rules now live in
+`src/styles/overlay.css`. Two stylesheets with the same name in different directories is how
+this hid; do not recreate the arrangement.
+
+**The browser check now runs anywhere.** `tests/browser/smoke.mjs` had absolute Linux paths for
+the extension directory and the Chromium binary, so it could only run on one machine; both are
+derived now (`EXT` / `CHROME` env vars still override). Ran clean on Windows.
 
 **Test suite exists as of P1.** `npm test` (Vitest) at the repo root — 216 tests over the state
 engine, the interruption budget, pipeline fusion, the P2 detectors, question generation and
@@ -216,6 +234,22 @@ the obvious next cleanup.
 
 Add new logic to the new modules, never to `content.js`.
 
+**Fixed in the UI pass**, all in `content.js` unless noted:
+
+- The Google Fonts `<link>` injected into every page is gone; `src/styles/fonts.css` is injected
+  instead, ahead of `overlay.css` so `@font-face` is registered before anything asks for it.
+- `sra_eye` defaults to `false` (also `popup.js` and `background.js`) — see the camera note under
+  *Decisions already made*.
+- The simulate path (`Alt+1`–`5` and the `simulateState` message) speaks the engine's vocabulary.
+  Both used to send `confused` / `overloaded` / `zoning_out` straight into
+  `COGNITIVE_STATE_ACTIONS`; they now go through one `runSimulatedState()` helper that translates
+  to the classifier's older action keys in a single place. `Alt+2` still reaches the `simplify`
+  renderer, which nothing else exercises.
+- The image-dwell branch tested `['confused','overloaded'].includes(lastCogState)`, which no
+  longer matched anything the engine emits — it had been silently dead since the state rename.
+  Now `lastCogState === 'struggling'`.
+- `reading-map.js` `EVENT_COLOR` was keyed on the same dead names, so map markers had no colour.
+
 ---
 
 ## THE TRAP — read this before touching features
@@ -261,12 +295,24 @@ Four different accuracy figures exist across this project's materials: 0.851 (`c
 
 ## Decisions already made — do not re-litigate
 
-- **Camera off by default.** Requesting webcam at install destroys conversion.
+- **Camera off by default.** Requesting webcam at install destroys conversion. **This is now
+  true in code as well as in principle** — `sra_eye` defaulted to `true` in `content.js`, in the
+  popup and in the service worker's guard, so a fresh profile started WebGazer on the first page
+  it saw. All three now default to `false`, and reading modes no longer set the key at all:
+  switching to "Study" must never start a webcam.
 - **Telemetry is the primary path.** Gaze is a secondary sensor contributing presence and coarse region only.
 - **Questions, not summaries, are the primary intervention.** Explanation is the fallback after a wrong answer. Follows D'Mello et al. (2016), whose RCT found just-in-time questioning recovered comprehension losses (d = 0.47). Summarising removes the desirable difficulty that produces retention. **Implemented in P3** — `STATE_ACTIONS` maps `struggling` and `skimming` to `ask`, and the explanation card is reached only after a wrong answer or when no question could be generated.
 - **State names describe observations:** `on_pace`, `skimming`, `struggling`, `drifting`, `absent`, `unknown`. Do not reintroduce `confused` or `overloaded` — they are unmeasurable internal states.
 - **AGPL-3.0 for the client; `server/` moves to a separate private repo.**
-- Fonts: **Literata** (body) + **Inter** (UI). Fraunces and Merriweather are being retired.
+- Fonts: **Source Serif 4** (reading voice) + **Plus Jakarta Sans** (UI voice), both bundled in
+  `src/libs/fonts/` under SIL OFL 1.1. Fraunces is retired; nothing is fetched from Google any
+  more. ~~Literata (body) + Inter (UI).~~ Superseded by the owner's direction: something in
+  Merriweather's family for reading, Jakarta for the secondary voice. Times New Roman was
+  considered for the reading voice and rejected — small x-height and thin strokes at 13px, and,
+  being the browser's default serif, it reads as a page whose stylesheet failed to load. Source
+  Serif 4 is the screen-drawn face closest to what was asked for. **Both faces are reached only
+  through `--alc-serif` / `--alc-ui` in `src/styles/fonts.css`; nothing hard-codes a family, so
+  changing the pairing is a two-line edit.**
 
 ---
 
@@ -390,11 +436,13 @@ updates are not guaranteed.
 MediaPipe FaceMesh implementation (Apache 2.0) would cover what remains, remove the GPL obligation,
 and drop a dead dependency. Do not undertake this without asking.
 
-**Fonts.** ~~Merriweather (`src/libs/`) is SIL OFL 1.1 and needs `OFL.txt` shipped alongside.~~
-**No font is bundled.** The two `Merriweather-*.woff2` files were 82-byte text placeholders, not
-fonts, and nothing referenced Merriweather anywhere in the codebase; they have been removed. There
-is nothing to license yet — add `OFL.txt` alongside the first real font binary. Fraunces is
-currently fetched from `fonts.googleapis.com` on every page the reader visits. See `NOTICE.md`.
+**Fonts.** ~~No font is bundled.~~ **Two are, as of the UI pass:** Source Serif 4 and Plus
+Jakarta Sans, latin + latin-ext, roman + italic, variable weight, ~436 KB total in
+`src/libs/fonts/`. Both are SIL OFL 1.1 and both licence files ship beside the binaries
+(`OFL-SourceSerif4.txt`, `OFL-PlusJakartaSans.txt`). **Any future font binary must arrive with
+its licence in the same directory** — that is the whole obligation, and it is easy to forget.
+~~Fraunces is fetched from `fonts.googleapis.com` on every page the reader visits.~~ **Removed.**
+No request to `fonts.googleapis.com` is made anywhere any more. See `NOTICE.md`.
 
 ---
 
@@ -434,6 +482,17 @@ Closed since:
   keys the tree branches on against the keys the extractor emits, by reading both files. This is
   the guard CLAUDE.md asked for. It cannot be caught by running the classifier, because the broken
   case returns confident labels — that is the failure mode.
+
+A third hole became visible in the UI pass, and it is the same shape as the first two:
+
+- **Nothing asserts that a stylesheet rule reaches an element.** The question card and the
+  receipt shipped their CSS in a file no code loaded, and 216 unit tests plus a browser smoke
+  check all passed while the primary intervention rendered as unstyled default HTML. The browser
+  check clicks `.sra-q-option` and reads `.sra-q-text`; both work perfectly on an unstyled
+  button. **Closed:** `npm run test:browser` now reads computed styles — that `.sra-popup`
+  resolves `position: fixed` with a non-zero radius, that `.sra-q-option` is styled, and that
+  `Source Serif 4` is the family actually resolving — and it counts third-party requests, which
+  must stay at zero. Presence of an element is not evidence that its rules loaded.
 
 Still open, and worth knowing when a green run tempts you:
 
