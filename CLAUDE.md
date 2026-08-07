@@ -72,6 +72,20 @@ alcoia/
 
 **Absent:** any build step, `_locales/`, CI, CONTRIBUTING.
 
+**The product is Alcoia.** Renamed from TL;DR across code, comments, UI, docs, the manifest,
+the log prefix and the extension directory (`TL_DR/` → `alcoia/`), plus the CSS tokens
+(`--tldr-*` → `--alc-*`) and the icon. Two prefixes were deliberately left alone:
+
+- **`sra_` storage keys.** Renaming them silently discards every existing reader's settings
+  unless a migration ships alongside, and a migration is a thing to get right on purpose, not
+  a side effect of a rebrand.
+- **`sra-` CSS class and element-id prefixes.** ~300 occurrences across CSS, JS, tests and the
+  browser check, with no user-visible payoff — nobody reads a class name. Worth doing as its
+  own mechanical pass if it ever bothers you; not worth the chance of missing one now.
+
+`mode=tldr` in the summarise request is an API contract with `server/index.js` and is not a
+brand string. It was left as is.
+
 **Deleted in the UI pass, both dead:** `src/content/overlay.css` and `src/popup/popup.css`.
 Nothing loaded either. The first one mattered — it was where the P3 question card
 (`.sra-q-*`) and the P4 receipt (`.sra-receipt*`) rules lived, while `content.js` has only ever
@@ -250,6 +264,32 @@ Add new logic to the new modules, never to `content.js`.
   Now `lastCogState === 'struggling'`.
 - `reading-map.js` `EVENT_COLOR` was keyed on the same dead names, so map markers had no colour.
 
+**Fixed in the telemetry pass** — three features that were quietly camera-only:
+
+- **`focus-ruler.js` followed gaze Y and nothing else.** With the camera off — the default —
+  `update()` was never called, so the band sat wherever it was last left. It now resolves its
+  position from the freshest available source: gaze (< 2s old) → cursor (< 4s old, and only
+  when the pointer is inside body text) → the reading line at 0.4 × viewport height, the same
+  anchor `telemetry/paragraph-tracker.js` uses. The reading line is always available and is the
+  correct behaviour on touch, so it is the floor rather than the failure case. `BAND_BY_STATE`
+  moved to the engine's state names.
+- **Reading calibration bailed out without WebGazer.** The gaze flow exists to generate
+  training points, but the number the feature is *for* is the reader's WPM baseline, which
+  needs no sensor: show a passage of known length, let them read it, ask when they are done.
+  `runSelfPacedCalibration()` in `reading-calibration.js` does that, and implausible results
+  (< 70 or > 1200 wpm) are rejected with a reason rather than seeding a baseline that would
+  mis-judge every later paragraph. **Related bug:** `content.js` wrote `sra_baseline_wpm` only
+  inside the gaze-baseline branch, so with the camera off the measured number never survived
+  the page unload. It is persisted on its own now.
+- **Reading modes no longer set `sra_eye`.** Switching to "Study" used to turn the webcam on.
+
+**Card placement.** `placePopup()` used to drop the card on top of the passage whenever no side
+had room at full width — so on a wide-column page the question covered the paragraph it was
+asking about. It now tries narrowing into the larger side margin first (down to 262px) and only
+overlaps as a genuine last resort. Below a 560px viewport it stops dodging altogether and
+becomes a bottom sheet (`.sra-sheet`); on a phone there is no margin to dodge into, and a
+predictable position beats a clever one.
+
 ---
 
 ## THE TRAP — read this before touching features
@@ -404,6 +444,39 @@ Then load unpacked and confirm manually:
 Report what you verified, not what you believe should work.
 
 ---
+
+## Platforms — desktop Chrome today, Safari on iOS/iPadOS intended
+
+The extension is built to run on a phone, and the architecture already suits it: telemetry is
+the primary path, it needs no permission, and scroll and pace signals work exactly the same on
+a touch screen. What has been done, and what has not:
+
+**Done — the UI survives a phone.**
+
+- The popup is `width: min(400px, 100vw)`, and below 400px the two-column grids collapse to one.
+- `@media (pointer: coarse)` raises every tappable target to 44px, the smallest Apple's guidance
+  treats as reliable. The desktop sizes are 20–34px, which is a mis-tap every time.
+- Hover styling is neutralised on touch, where it latches after a tap and reads as a selection
+  the reader never made.
+- In-page cards become a bottom sheet under 560px; the word bubble, which needs hover, is hidden.
+- Camera controls are removed entirely when the platform cannot deliver a camera. `popup.js`
+  `cameraIsAvailable()` treats iOS and iPadOS as false — `navigator.mediaDevices` exists there
+  and does not work, so feature detection alone reports a capability that is not real.
+
+**Not done, and not doable from this repository.**
+
+- **A Safari build needs an Xcode wrapper.** `xcrun safari-web-extension-converter alcoia/`
+  generates an Xcode project; shipping it needs a paid Apple Developer account, an App Store
+  submission, and a native container app. There is no build step in this repo and adding one is
+  a separate decision.
+- **Keyboard shortcuts do not exist on iPhone.** Alt+S/T/F/M/R/I are reachable on an iPad with a
+  keyboard and nowhere else. Every one of them needs a touch equivalent before the mobile
+  experience is complete — most already have a button in the popup; the focus ruler, reading map
+  and word lookup do not.
+- **`Ctrl+hover` word lookup has no touch path at all.** Long-press is the obvious candidate and
+  collides with the system selection menu; this needs design, not just an event listener.
+- **WebGazer is dead weight on mobile** — no usable camera, and it is the GPLv3 dependency. If
+  Safari becomes a real target, dropping it is worth more there than anywhere else.
 
 ## Third-party licensing — read before adding, removing or replacing dependencies
 
