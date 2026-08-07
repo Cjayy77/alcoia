@@ -443,6 +443,8 @@ After any change:
 
 ```bash
 npm run lint && npm test
+npm run test:browser            # English article
+PAGE=zh npm run test:browser    # Chinese article — guards the segmentation path
 ```
 
 Then load unpacked and confirm manually:
@@ -454,6 +456,60 @@ Then load unpacked and confirm manually:
 Report what you verified, not what you believe should work.
 
 ---
+
+## Languages — what the telemetry can and cannot read
+
+**Every word count in the pipeline was `text.split(/\s+/)`.** Chinese, Japanese, Thai, Khmer,
+Lao and Burmese do not put spaces between words, so a 600-character Chinese paragraph counted as
+**one word** and fell under every downstream threshold — `minWords: 20` in paragraph-tracker,
+`MIN_WORD_COUNT: 70` in comprehension-monitor, `MIN_WORDS: 40` in session-recall. On those pages
+no paragraph was tracked, no difficulty computed, no pace measured, no signal emitted, the
+receipt reported 0% coverage and Alt+R had nothing to ask. Nothing threw. **The extension loaded,
+ran, and did nothing, on a large fraction of the web, while every test passed.** Same failure
+shape as the unstyled question card and the deleted keyboard handler: absence, not error.
+
+`telemetry/segmentation.js` is now the single place words and sentences are counted. It uses
+`Intl.Segmenter` (native in Chrome 87+ and Safari 14.1+, no dependency), falls back to a
+characters-per-word estimate on engines without it, and memoises language detection.
+
+Fixed with it:
+
+- **Sentence splitting** was `/[.!?。！？]+/` — no Arabic question mark (؟), no Urdu full stop (۔),
+  no Devanagari danda (।). Arabic prose often carries no ASCII period, so a paragraph collapsed
+  into one sentence, words-per-sentence exploded and it scored `very_difficult` almost every
+  time. Because skimming only interrupts on difficult text, that was **systematic
+  over-interruption of Arabic readers**.
+- **Structural anchors were English.** One pair (7 words/clause, 15 words/sentence) judged every
+  language. `STRUCTURE_ANCHORS` in `text-difficulty.js` now varies by script family. Those
+  numbers are rough and unvalidated — they exist to remove a directional bias, not to measure.
+- **Structure genuinely unavailable** (Thai, Khmer: phrase breaks are spaces, no terminal
+  punctuation) now reports `basis: 'structure_unavailable'` and a neutral score, instead of
+  being read as one enormous clause and scored as maximally dense.
+- **`isEnglishPage()` fell back to `navigator.language`**, so a French page with no `lang`
+  attribute on an en-US browser ran Flesch-Kincaid — whose syllable counter strips everything
+  outside `[a-z]`, deleting é/è/ç and scoring the prose far easier than it is. `detectLanguage()`
+  reads the document's tag and sniffs the script only when there is none. It never asks the
+  browser.
+- **One global WPM baseline** was applied across every language. Now per-language
+  (`sra_baseline_wpm_by_lang`), with the legacy `sra_baseline_wpm` kept as the fallback so
+  existing installs lose nothing and no migration is needed.
+- **Vertical writing** (`writing-mode: vertical-rl`, some Japanese sites) turned the reading line
+  the wrong way. `paragraph-tracker` and `focus-ruler` now switch axis, and vertical-rl starts
+  from the right edge.
+- Selection classification in `interaction-signals.js` called every CJK selection a one-word
+  "term", and `content.js` reported a whole Chinese article as one word in the receipt.
+
+**Deliberately not claimed:** that a segmented Chinese "word" is the same unit as an English one.
+It is not. What matters downstream is that the count scales with the amount of text, so the
+reader's own baseline and residual distribution calibrate the rest — which is how the pace
+signals already worked for English.
+
+**Still English-only, correctly:** `fleschKincaid()` and the calibration passages. `analyzeDifficulty`
+guarantees FK is never reached for other languages.
+
+**Guarded:** `tests/segmentation.test.js` (26 tests) and `PAGE=zh npm run test:browser`, which runs
+the full browser checklist against `tests/browser/article-zh.html`. The English and Chinese runs
+must both come back with 0 page errors and a graded question card.
 
 ## Page CSP — verified, not assumed
 
