@@ -217,7 +217,17 @@ Both now describe the observation (slowed down, went back) rather than the senso
 ### `manifest.json`
 
 - ~~`<all_urls>` + `all_frames: true` + `match_about_blank` will draw manual Web Store review.~~ **Fixed in P0** — `all_frames` is now `false` and `match_about_blank` is removed. `<all_urls>` remains (the extension has to read arbitrary pages) and still invites review.
-- `web_accessible_resources` exposes `src/content/**` to `<all_urls>`, letting any page enumerate the extension's modules. Worth narrowing; not yet done.
+- ~~`web_accessible_resources` exposes `src/content/**` to `<all_urls>`.~~ **Narrowed** to the
+  files actually fetched from page context: the content modules (dynamic `import()` from a
+  content script requires them to be web-accessible), the two stylesheets, the font binaries,
+  WebGazer plus its bootstrap, pdf.js, jszip, and the two viewer pages. `src/popup/**` and
+  `assets/**` were dropped — the extension opens its own pages, which needs no grant.
+  **`use_dynamic_url: true` was tried and reverted.** It is the real anti-fingerprinting fix,
+  but the relative `url()` references inside `fonts.css` resolve against the static origin
+  while the module imports use the rotating one, so every font and two telemetry modules were
+  denied. Verified by the browser check, which went to 9 console errors and 0 popups. Making it
+  work would mean absolute `chrome.runtime.getURL()` font paths, i.e. generating `fonts.css` at
+  runtime — a build step this repo does not have.
 
 ### `content.js`
 
@@ -444,6 +454,28 @@ Then load unpacked and confirm manually:
 Report what you verified, not what you believe should work.
 
 ---
+
+## Page CSP — verified, not assumed
+
+**A strict page CSP does not affect Alcoia.** Tested against
+`default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'`
+with the API on a second origin: content script injected, overlay stylesheet applied, both
+bundled fonts loaded, the question card rendered, the cross-origin question fetch succeeded,
+**0 CSP violations, 0 page errors**. Three reasons it holds:
+
+- Content scripts run in an isolated world, so page `script-src` never sees them.
+- `chrome-extension:` resources listed in `web_accessible_resources` are exempt from page CSP,
+  which covers the injected `<link>`s and the fonts they pull.
+- Content-script `fetch()` carries the extension's host permissions, not the page's
+  `connect-src`.
+
+**The one thing page CSP does still block is WebGazer's primary injection path.** `startTracker()`
+appends a `<script src="chrome-extension://...">` to the page head, which is ordinary page
+script loading and dies under `script-src 'self'`. There is a fallback — `background.js`
+re-injects via `chrome.scripting.executeScript({ world: 'MAIN' })`, which is browser-privileged
+and does bypass page CSP — but it is gated behind an **8-second timeout**. With the camera off by
+default this is nearly unreachable; if the camera path ever matters again, try the privileged
+route first rather than after an 8s wait.
 
 ## Platforms — desktop Chrome today, Safari on iOS/iPadOS intended
 
