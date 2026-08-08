@@ -61,8 +61,5 @@
     "32": "assets/alcoia-mark-lilac.png",
     "48": "assets/alcoia-mark-lilac.png",
     "128": "assets/alcoia-mark-lilac.png"
-  },
-  "background": {
-    "service_worker": "background.js"
   }
 }
