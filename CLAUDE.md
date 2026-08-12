@@ -45,11 +45,17 @@ that optimises for its own silence will achieve it and report success.
    answer resolves to `on_pace`. **A dismissal asserts nothing at all** — declining to be tested
    says nothing about comprehension, and must never be read as success or as struggle.
 2. **Browser telemetry** — reading rate vs. text difficulty and personal baseline, scroll
-   regressions, selection, copy, blur, idle. Precise, always available, no permission needed.
-   **The primary path and the default.**
-3. **Webcam gaze** — scheduled for removal. See *Known defects*.
+   regressions, selection, copy, blur. Precise, always available, no permission needed. **The only
+   detection path.**
 
-If a task appears to invert this hierarchy, stop and ask.
+✅ **Webcam gaze has been removed**, not merely demoted. It used to sit as tier 3 here, corroborating
+telemetry and — in one narrow case — disambiguating an idle-with-focus reader. Both roles are gone:
+there is no sensor, no classifier, no calibration flow that trains one, and no code path that reads
+a gaze coordinate. See "Actual repository state" below for what was deleted and why, including two
+modules (`idle-overlay.js`, `lang-detect.js`) that were not on the removal item's original file list
+but turned out to exist solely to serve the gaze pipeline.
+
+If a task appears to reintroduce gaze, a camera permission, or a webcam-derived signal, stop and ask.
 
 ---
 
@@ -306,26 +312,34 @@ well the tree recovers its own generator's rules.
 
 ---
 
-## THE TRAP — read before touching the feature set
+## THE TRAP — historical, kept for context on why the removal was done wholesale
 
-`classifier.js` branches on `f.saccade_length`, `f.saccade_std`, `f.velocity_mean`.
+✅ **Resolved: the gaze path — classifier.js, gaze-features.js, gaze-utils.js, webgazer-bootstrap.js,
+webgazer.min.js, sra-page-bridge.js — has been deleted, not patched.** This section used to warn
+against a specific way of getting that wrong; it is kept so the reasoning survives the deletion.
 
-Remove those keys from the extractor without retraining and every comparison becomes
-`undefined <= X`, which evaluates to `false` **without throwing.** The classifier does not crash. It
-routes down one branch forever and keeps emitting confident labels.
+The trap was in `classifier.js`, which branched on `f.saccade_length`, `f.saccade_std`,
+`f.velocity_mean`. Removing those keys from the extractor without retraining made every comparison
+become `undefined <= X`, which evaluates to `false` **without throwing.** The classifier did not
+crash. It routed down one branch forever and kept emitting confident labels:
 
 ```
 classifyGazeState({})                   → { label: 'skimming', confidence: 0.722 }
 focused sample, 3 saccade keys removed  → focused (0.993) becomes skimming (1.000)
 ```
 
-Pinned by `tests/classifier-missing-keys.test.js` and `tests/classifier-feature-contract.test.js`.
-**Do not disable either.**
+That was pinned by `tests/classifier-missing-keys.test.js` and
+`tests/classifier-feature-contract.test.js`, which guarded a file that no longer exists — both are
+now deleted too, explicitly, rather than left passing vacuously against nothing.
 
-**This does not block removing the gaze path wholesale.** `orchestrator.js` gates the classify loop
-on `!cfg.eyeTrackingEnabled || !host.getLastGazePoint()`. With no sensor there is no gaze point, the
-loop returns early, and `classifyGazeState` is never reached. The trap applies to deleting *feature
-keys while the classifier still runs* — a different and more dangerous operation.
+The reasoning that made wholesale removal safe, for the next time a generated-artifact classifier
+needs retiring: `orchestrator.js` gated the classify loop on
+`!cfg.eyeTrackingEnabled || !host.getLastGazePoint()`. With no sensor there was no gaze point, the
+loop returned early, and `classifyGazeState` was never reached even before deletion — so removing
+the whole pipeline in one PR, rather than trimming feature keys while a classifier kept running
+against them, could not trigger the undefined-comparison failure mode above. The trap applies to
+deleting *feature keys while the classifier still runs* — a different and more dangerous operation
+than the one actually performed here.
 
 ---
 
@@ -351,32 +365,29 @@ Verified by reading the tree. Line counts current as of this writing.
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
     ├── background.js          service worker
     ├── src/content/
-    │   ├── content.js           1754 — host: modules, settings, fetch, highlight, word lookup,
+    │   ├── content.js           1471 — host: modules, settings, fetch, highlight, word lookup,
     │   │                               selection, keyboard, SPA nav, render callbacks
-    │   ├── ui-controller.js      466 — popups, highlight, toasts, dark mode. Owns openPopups
-    │   ├── reading-calibration.js 443 — WPM calibration (self-paced path is the live one)
-    │   ├── gaze-utils.js         414 — WebGazer smoothing/EMA        [removal candidate]
-    │   ├── state-engine.js       402 — signal fusion, one state estimate
-    │   ├── orchestrator.js       389 — detectors, engine, budget, the one subscriber
+    │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
+    │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
+    │   │                               gaze branch (see the migration note above)
+    │   ├── orchestrator.js       266 — detectors, engine, budget, the one subscriber
     │   ├── comprehension-monitor.js 300 — pace vs. difficulty vs. personal baseline
     │   ├── receipt.js            282 — reader-owned session record + preview
-    │   ├── classifier.js         274 — GENERATED decision tree       [removal candidate]
     │   ├── reading-map.js        255 — sidebar minimap
-    │   ├── focus-ruler.js        239 — reading band
-    │   ├── gaze-features.js      232 — feature extractor             [removal candidate]
-    │   ├── webgazer-bootstrap.js 202 — main-world injection          [removal candidate]
+    │   ├── focus-ruler.js        239 — reading band; already cursor/reading-line-first, gaze
+    │   │                               was only ever the highest-priority of three sources and
+    │   │                               is now simply never fed one
+    │   ├── reading-calibration.js 188 — WPM calibration, self-paced only (the gaze-training
+    │   │                               mode that used to pace the reader is gone)
     │   ├── question-card.js      150 — the retrieval question card
     │   ├── dyslexia-utils.js     136
-    │   ├── idle-overlay.js       133
     │   ├── overlay-utils.js      132
     │   ├── pdf-handler.js        130 — partially wired, see defects
     │   ├── tts-handler.js        126
-    │   ├── lang-detect.js        125
     │   ├── intervention-policy.js 159 — the interruption budget, one place; also exploration
     │   │                               sampling (EXPLORATION_SAMPLE_RATE)
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
-    │   ├── sra-page-bridge.js     41 — postMessage bridge            [removal candidate]
     │   └── telemetry/
     │       ├── segmentation.js       225 — NOT a detector. Word/sentence counting, Intl.Segmenter
     │       ├── text-difficulty.js    185 — NOT a detector. FK + syntactic load
@@ -394,8 +405,28 @@ Verified by reading the tree. Line counts current as of this writing.
     ├── src/shared/config.js   the one place the backend origin is defined; classic script,
     │                           loaded before content.js, background.js and popup.js
     ├── src/styles/            fonts.css, overlay.css, panel.css, popup.css (legacy)
-    └── src/libs/              webgazer.min.js (GPLv3, 1.7 MB), pdfjs, jszip, fonts/ (OFL 1.1)
+    └── src/libs/              pdfjs, jszip, fonts/ (OFL 1.1) — webgazer.min.js (GPLv3, 1.7 MB)
+                                is deleted; see the migration note above
 ```
+
+✅ **The gaze path is deleted, not demoted.** Removed entirely, not just from the tree above:
+`src/libs/webgazer.min.js`, `src/content/classifier.js`, `src/content/gaze-features.js`,
+`src/content/gaze-utils.js`, `src/content/webgazer-bootstrap.js`, `src/content/sra-page-bridge.js`,
+`tests/classifier-missing-keys.test.js`, `tests/classifier-feature-contract.test.js`. Two modules
+were deleted too even though they were not on the removal item's original file list, because reading
+the actual code showed they existed solely to serve the gaze pipeline and had no other caller once
+it was gone: `src/content/idle-overlay.js` (its only trigger was raw gaze features from the classify
+loop) and `src/content/lang-detect.js` (its `detectScript()`/`watchScriptChanges()` output fed
+nothing except the gaze classifier's script-aware feature patch). `alcoia/demo.html`, a manual QA
+page whose every section existed to demonstrate a specific gaze-classifier trigger, is deleted for
+the same reason — keeping it would describe a feature that no longer exists, which CLAUDE.md's own
+opening line calls worse than no documentation at all. `ui-controller.js`'s
+`updateGazeOverPopups`/`isGazeOverAnyPopup` (a second, gaze-point-driven autohide-pause mechanism
+layered on top of the mouse-hover one) are deleted rather than left permanently unreachable; the
+mouse-hover pause (`_mouseOver`) still works exactly as before. The `scripting` permission is
+dropped from `manifests/base.json` — it existed only for the WebGazer main-world injection and one
+popup-side content-script reinjection button, both gone. Package size: **~4.7 MB → ~3.0 MB** per
+target, almost entirely the deleted 1.7 MB WebGazer bundle.
 
 **Detector count, precisely.** Eleven files in `telemetry/`, but only **eight** export a `create*`
 factory; of those, `response-signals.js` is tier 1 rather than telemetry and `cursor-tracking.js`'s
@@ -448,21 +479,20 @@ passes against the detector in isolation and asserts nothing about the engine.
 - **All four icon sizes point at one PNG.** `assets/alcoia-mark-lilac.png` serves 16/32/48/128 in
   both `action.default_icon` and `icons`.
 - **The shipped package contains no LICENSE.** `build.mjs` copies from `alcoia/`; `LICENSE` sits at
-  the repo root. `dist/*/` ships 1.7 MB of GPLv3 WebGazer with no licence text. Resolves itself when
-  the gaze path goes; until then it is a defect. Font licences are fine.
+  the repo root. The GPLv3-WebGazer half of this defect is gone now that the gaze path is deleted —
+  `dist/*/` no longer ships 1.7 MB of GPLv3 code with no licence text alongside it — but the client
+  is still AGPL-3.0 and the shipped package still carries no `LICENSE` file for that. Item 6 in the
+  build brief is the mechanical fix (copy it into the build output); not done yet.
 
-### `gaze-features.js` — unfixable by tuning
+### `gaze-features.js` — deleted, kept here for the record
 
-- **`dist > 30`** as the fixation/saccade boundary against ~180 px of tracker error — entirely
-  inside the noise floor. `saccade_length`, `saccade_std`, `velocity_mean` and `regression_rate`
-  measure tracker jitter, not eye movement.
-- **`lineBand = Math.round(pt.y / 20)`** uses raw viewport `y` with no scroll offset. Scrolling
-  changes the band with zero eye movement.
-- **Fallback constants are all focused-looking.** When data is sparse the extractor fabricates
-  plausible focused-reading features instead of abstaining. Violates invariant 5.
-- **DBSCAN `eps: 80`** is below tracker error, so it clusters noise.
-
-`gaze_drift_px`, `on_page_fraction` and `face_present` are the only honest outputs.
+This section used to document four measurement problems in the gaze feature extractor —
+`dist > 30` as a fixation boundary sitting inside the webcam tracker's own ~180px error, a
+scroll-blind line-band calculation, focused-looking fallback constants that violated invariant 5,
+and a DBSCAN epsilon below the noise floor. The file, and the classifier that consumed its output,
+are deleted rather than fixed — see the migration note under "Signal hierarchy" above. Kept as a
+record of why "tune the thresholds" was never going to be the right fix for that module, in case a
+future gaze-adjacent feature is proposed and the same reasoning applies.
 
 ### `pdf-handler.js` / `pptx-handler.js` — partially wired
 
@@ -472,8 +502,10 @@ PDF and PPTX have not been verified end to end. **Verify before building file im
 
 ### Convention drift
 
-`content.js` is **1754 lines** and growing (was ~1435 at the last refactor). Six files exceed the
-~300-line convention. Settings live in `content.js` as loose `let`s read through accessors
+`content.js` is **1471 lines** — down from 1754 after the gaze-path removal deleted roughly 280
+lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
+Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 424); it was six
+before that removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
 
@@ -481,7 +513,10 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-250 tests pass. `npm run lint` exits 0 with 15 warnings (all `no-unused-vars` in untouched files).
+245 tests pass, in 15 files (two classifier-guard files were deleted alongside the classifier they
+guarded — see the gaze-path migration note). `npm run lint` exits 0 with 5 warnings (all
+`no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
+`npm test` and `npm run lint` rather than trusting this line.
 
 **The suite's failure mode is absence, not error.** Four instances so far:
 
@@ -502,7 +537,6 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
   **the reader-to-self comparison that stops the system quizzing a slow reader for reading slowly.**
   That is the fairness safeguard, covered only incidentally.
 - **No end-to-end reading session** with clock advancement across minutes.
-- **The camera-on path is not a distinct case** in any test.
 - **Question quality is untested.** `npm run questions:review` mechanises what can be mechanised —
   span really in the passage, question/span lexical overlap, giveaway distractors, conspicuous
   option lengths — and **flags rather than scores.** Judging whether a question tests understanding
@@ -513,14 +547,17 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Decisions already made — do not re-litigate
 
-- **Camera off by default.** `sra_eye` defaults to `false` in `content.js`, `popup.js` and the
-  service worker guard. Reading modes must never set it.
-- **Telemetry is the primary path.**
+- ✅ **Camera removed, not just off by default.** There was no camera path as of the gaze-removal
+  item — no `sra_eye` key, no permission, no sensor, nothing for a reading mode to accidentally
+  turn on. If a future task proposes adding one back, that is a new invariant-1 decision, not a
+  restoration, and needs the same scrutiny a first-time camera feature would get.
+- **Telemetry is the only detection path.**
 - **Questions, not summaries, are the primary intervention.** Summarising performs the operation
   that produces the learning. Follows D'Mello et al. (2016), d = 0.47.
 - **State names describe observations:** `on_pace`, `skimming`, `struggling`, `drifting`, `absent`,
-  `unknown`. Do not reintroduce `confused` or `overloaded`. (`classifier.js` still emits them
-  because it is generated; `content.js` translates in one place.)
+  `unknown`. Do not reintroduce `confused` or `overloaded` — those were the deleted gaze
+  classifier's vocabulary, translated at the boundary while it still ran. There is no longer a
+  boundary to translate at.
 - **Statefulness is level B.** Access is via issued install token. Fingerprinting refused.
 - **Aggregate class analytics are anonymous and cohort-level only.** Not per student. Individual
   verification is the weaker and riskier pitch, and universities are moving away from
@@ -640,8 +677,8 @@ node build.mjs                  # both targets
 Then load unpacked and confirm manually:
 
 - Loads with no console errors on a plain article page
-- Reading detection runs with the camera **off**
-- No `getUserMedia` call unless the reader explicitly enabled the camera
+- Reading detection runs on telemetry alone — there is no camera path to be off
+- No `getUserMedia` call, ever — there is no code path left that would make one
 - No network request contains image or video data
 - Third-party requests remain at zero
 
