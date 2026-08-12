@@ -521,10 +521,11 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-252 tests pass, in 15 files (two classifier-guard files were deleted alongside the classifier they
-guarded — see the gaze-path migration note — and comprehension-monitor.test.js is new). `npm run
-lint` exits 0 with 5 warnings (all `no-unused-vars` in untouched files). These numbers drift with
-every PR; re-check with `npm test` and `npm run lint` rather than trusting this line.
+272 tests pass, in 16 files (two classifier-guard files were deleted alongside the classifier they
+guarded — see the gaze-path migration note — and comprehension-monitor.test.js and
+failure-paths.test.js are new). `npm run lint` exits 0 with 5 warnings (all `no-unused-vars` in
+untouched files). These numbers drift with every PR; re-check with `npm test` and `npm run lint`
+rather than trusting this line.
 
 **The suite's failure mode is absence, not error.** Four instances so far:
 
@@ -563,7 +564,33 @@ every PR; re-check with `npm test` and `npm run lint` rather than trusting this 
   span really in the passage, question/span lexical overlap, giveaway distractors, conspicuous
   option lengths — and **flags rather than scores.** Judging whether a question tests understanding
   is a human job. Do twenty varied pages before shipping.
-- **No test asserts a failure path reaches `unknown`.** Invariant 9 is stated but unguarded.
+- ✅ **Fixed: invariant 9 is now guarded**, and one real violation of it was found and fixed while
+  adding coverage. `tests/failure-paths.test.js` covers what is unit-testable directly
+  (state-engine.js resolving unrecognised/absent/null telemetry to `unknown`; a denied or
+  never-recorded decision never spending the interruption budget; question-card.js rejecting
+  malformed question shapes). `tests/browser/smoke.mjs` gained a `FAIL=questions` mode that makes
+  the mock server return a 422 for every question request, then asserts the endpoint was actually
+  called, no card ever reached the screen, and the drop is visible in the debug log as
+  `Interruption dropped before render (...) — budget not spent` — the only way to exercise
+  content.js's own failure paths, since it is a single non-modular IIFE with nothing exported for
+  a unit test to import. **The violation:** `handleAsk()` in content.js used to fall back to a
+  full comprehension-offer popup (or, via a since-removed dead branch, a summary) whenever question
+  generation failed for any reason — network error, 422, malformed response, or a legitimately
+  empty result — which meant a failed *question* call quietly became a shown *explanation*, on a
+  product whose stated design is that asking beats summarising. Fixed: `handleAsk()` now returns
+  `false` (nothing shown, no budget spent) on any empty result, and the now-fully-dead
+  `handleComprehensionSignal()` / `buildComprehensionOfferHtml()` — reachable only from that
+  removed fallback and from an `onIntervention` branch that `STATE_ACTIONS` can never actually
+  produce — are deleted rather than left as a second `cursor_reading`. Separately,
+  `question-card.js`'s `show()` used to crash on a question missing both `span` and `q` (`.slice()`
+  on `undefined`) and would otherwise render literally the text "undefined" for other missing
+  fields; it now validates the full shape (`q`, all four `options`, `answerIndex`) and degrades to
+  `false` instead. `triggerAIForParagraph()`'s PDF/PPTX text extraction is now wrapped in
+  try/catch, falling through to the existing empty-text return, rather than an uncaught rejection.
+  **Not addressed here:** install-token failure (no token mechanism exists yet — item 9) and
+  storage read failure (already handled by `chrome.storage.local.get`'s own default-merging
+  contract, not by code in this repo). See `tests/failure-paths.test.js`'s header for the full
+  breakdown of what is covered where and why.
 
 ---
 
