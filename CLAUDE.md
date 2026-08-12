@@ -152,6 +152,24 @@ first build. Open architecture decision.
 - Every AI call carries it. **No token, no response.**
 - The server counts against the token and enforces the ceiling.
 
+✅ **Client side implemented.** `alcoia/src/shared/install-token.js` — `sra_install_token` in
+`chrome.storage.local`, checked before every fetch and shared across overlapping callers so several
+tabs waking at once still cost one request, not one each. **Loaded from content.js, not
+background.js**, despite the actual AI-call fetch happening in the background worker: this file is
+a genuine ES module, loaded the same way every other content module is (`loadModule()`, a dynamic
+`import()`), and Chrome disallows dynamic `import()` from inside a service worker outright —
+confirmed directly against real Chromium via `tests/browser/smoke.mjs`, not assumed from the spec.
+content.js resolves the token and passes it to `background.js` as a plain string in the message
+body (`callBackend()` in content.js); `background.js`'s `'summarize'`/`'apiPost'` handler is a dumb
+relay that requires one to already be attached (`X-Alcoia-Install-Token` header) and refuses to
+fetch without it. A 401/403 from the real endpoint is reported back as `tokenRejected`, which
+content.js turns into `installToken.invalidate()` — the automatic version of "the reader deletes it
+and gets a fresh one." Unit tests in `tests/install-token.test.js` cover issuance, the shared
+in-flight dedup, and all three failure modes resolving to `null` rather than throwing.
+`tests/browser/smoke.mjs` gained `FAIL=token` (the token endpoint itself returns 503) alongside the
+existing `FAIL=questions`, plus an always-on check that every AI request the mock server received
+carried the token header.
+
 **The token is issued, not derived.** It is not computed from device or network characteristics.
 The reader holds it, can delete it, and deleting it works — they get a fresh one. It identifies an
 install, not a person or a machine. It is never attached to passage content in logs.
@@ -402,8 +420,11 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── scroll-dynamics.js     59 — scroll jerk
     │       └── residual-distribution.js 53 — NOT a detector. Per-reader pace thresholds
     ├── src/popup/             popup.js, notes.js, 6 HTML pages
-    ├── src/shared/config.js   the one place the backend origin is defined; classic script,
-    │                           loaded before content.js, background.js and popup.js
+    ├── src/shared/
+    │   ├── config.js          the one place the backend origin is defined; classic script,
+    │   │                       loaded before content.js, background.js and popup.js
+    │   └── install-token.js   the opaque per-install token; a real ES module, loaded only
+    │                           from content.js (loadModule) — see Access control above
     ├── src/styles/            fonts.css, overlay.css, panel.css, popup.css (legacy)
     └── src/libs/              pdfjs, jszip, fonts/ (OFL 1.1) — webgazer.min.js (GPLv3, 1.7 MB)
                                 is deleted; see the migration note above
@@ -521,11 +542,11 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-272 tests pass, in 16 files (two classifier-guard files were deleted alongside the classifier they
-guarded — see the gaze-path migration note — and comprehension-monitor.test.js and
-failure-paths.test.js are new). `npm run lint` exits 0 with 5 warnings (all `no-unused-vars` in
-untouched files). These numbers drift with every PR; re-check with `npm test` and `npm run lint`
-rather than trusting this line.
+283 tests pass, in 17 files (two classifier-guard files were deleted alongside the classifier they
+guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
+failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
+(all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
+`npm test` and `npm run lint` rather than trusting this line.
 
 **The suite's failure mode is absence, not error.** Four instances so far:
 
