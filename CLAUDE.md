@@ -632,8 +632,13 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                          passage text; opened from popup.html's Developer section
     │   ├── diagnostics-format.js pure formatting helpers (maskToken, relativeTime,
     │   │                          escapeHtml) split out so they are unit-testable alone
-    │   └── quiz.html/.js         the quiz page — reuses question-card.js's confidence-commit
-    │                              markup/CSS and calibration-copy.js; persists via quiz-store.js
+    │   ├── quiz.html/.js         the quiz page — reuses question-card.js's confidence-commit
+    │   │                          markup/CSS and calibration-copy.js; persists via quiz-store.js
+    │   ├── export.html/.js       markdown export of notes/highlights/sessions; script external
+    │   │                          since item 21 (was inline, CSP-dead)
+    │   ├── highlights.html/.js   the colour-highlight list/filter/delete page; same item-21 fix
+    │   └── session-report.html/.js the per-session state-distribution report; same item-21 fix —
+    │                              still keyed on removed state names, see Known defects (item 22)
     ├── src/shared/
     │   ├── config.js          the one place the backend origin is defined; classic script,
     │   │                       loaded before content.js, background.js and popup.js
@@ -824,6 +829,52 @@ paragraph-model mismatch above should also decide how `coverage-gate.js`'s "read
 math applies to a document with pages instead of continuous scroll — that question was open before
 this verification and remains open after it.
 
+### Inline `<script>` blocks are silently dead under MV3 CSP — fixed, twice now
+
+✅ **Fixed.** Item 20 found and fixed this on `src/pdf-viewer/viewer.html` and
+`src/pptx-viewer/viewer.html`. It has now appeared a second time: `src/popup/export.html`,
+`src/popup/highlights.html` and `src/popup/session-report.html` all carried their entire logic in
+an inline `<script>` block, which the same MV3 default CSP (`script-src 'self'`, no override in any
+`manifests/*.json`) blocks outright. Confirmed in a real Chromium load before changing anything:
+all three pages produced the CSP refusal in the console and **zero other console output** — not
+even the page's first line of script ran, because the whole block was refused as one unit. All
+three are reachable from the popup (`popup.js`'s `sessionReportBtn`/`viewHighlightsBtn`/`exportBtn`
+handlers), so all three were completely non-functional in the shipped extension.
+
+Fixed the same way as item 20: each inline block moved verbatim into an external file beside its
+page (`export.js`, `highlights.js`, `session-report.js`), referenced via `<script src="...">` — a
+pure move, no logic changed. Re-verified in a real Chromium load with realistic seeded
+`chrome.storage.local` data (notes, colour highlights, a session record): all three pages now
+render their real content — the export preview, the highlight cards, the session report's stat
+grid — with zero CSP errors and zero page errors. Confirmed, not assumed, that a same-directory
+`<script src="...">` referenced from the extension's own page needs no
+`web_accessible_resources` entry — `manifests/base.json` was not touched and all three loaded
+correctly regardless.
+
+**Audited the whole shipped tree for the same defect class, per this item's actual point.** Two
+inline-script forms are blocked by the same CSP directive: `<script>` blocks with no `src`, and
+inline event-handler attributes (`onclick=`, `onchange=`, etc.). Grepped every `.html` file under
+`alcoia/` for both. Result: exactly the three files above had inline `<script>` blocks — every
+other page (`popup.html`, `notes.html`, `quiz.html`, `diagnostics.html`, `upgrade.html`, and item
+20's two viewer pages) already used external scripts. Zero inline event-handler attributes anywhere
+in the tree. Zero `javascript:` URIs in any `href`.
+
+**Guarded against a fourth occurrence.** `tests/no-inline-scripts.test.js` walks every shipped
+`.html` file and asserts no inline `<script>` block and no inline event-handler attribute. Verified
+the guard actually catches a regression (not just that it passes): temporarily reintroduced an
+inline `<script>` and, separately, an `onclick=` attribute into `export.html`, confirmed the test
+failed both times, then restored the file.
+
+**`session-report.js` still has a separate, known bug, not fixed here on purpose.** Its
+`STATE_COLORS`/`STATE_LABELS` are keyed on `focused`/`confused`/`zoning_out`/`overloaded` — state
+names the engine has not emitted since the gaze classifier was removed (see "Decisions already
+made" above: the current vocabulary is `on_pace`/`skimming`/`struggling`/`drifting`/`absent`/
+`unknown`). Before this item, that bug was unreachable — the whole script never ran. **Now that the
+script executes, this becomes a live but silent failure**: every session's state bar renders empty,
+because none of the five keys match a `stateDurations` field the engine ever writes. This is a
+separate, scoped fix (mapping display names onto the real state vocabulary), not a pure move, so it
+was left alone here rather than bundled in — tracked as its own follow-on item.
+
 ### Convention drift
 
 `content.js` is **1616 lines** — down from 1754 after the gaze-path removal deleted roughly 280
@@ -837,10 +888,10 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-431 tests pass, in 25 files (two classifier-guard files were deleted alongside the classifier they
+452 tests pass, in 26 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
-failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js and
-keyword-highlight.test.js are new). `npm run lint` exits 0 with 4 warnings
+failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js,
+keyword-highlight.test.js and no-inline-scripts.test.js are new). `npm run lint` exits 0 with 4 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
 `npm test` and `npm run lint` rather than trusting this line.
 
