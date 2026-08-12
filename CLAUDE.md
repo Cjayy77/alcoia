@@ -271,10 +271,9 @@ coverage-gate.js`'s `evaluate(key)` is the one function; `quiz-offer.js` decides
 unprompted end-of-reading card (near the bottom of the page, not yet offered for this document) and
 renders it through `content.js`'s `showQuizOffer()`; the popup's "Take the quiz" button
 (`popup.html`/`popup.js`) reads the same `evaluate()` result via a new `checkQuizCoverage` message.
-**The quiz page itself does not exist yet — that is item 17.** Both "Take the quiz" actions currently
-open `src/popup/quiz.html`, which 404s until item 17 lands; this is the same inert-until-later-item
-pattern `upgrade.html`'s pricing buttons already use. Two corrections against the bullets below, and
-one unrelated pre-existing bug found and fixed while building it:
+**The quiz page itself is now implemented too** — `src/popup/quiz.html`/`.js`. Two corrections
+against the bullets below, and one unrelated pre-existing bug found and fixed while building the
+gate:
 
 - **Not built on the existing "session continuity" store.** `saveLastVisit()`/`checkLastVisit()` in
   `content.js` — the "↩ Back" toast — key on `window.location.href`, the *entire* URL including the
@@ -314,6 +313,34 @@ existing `sra_last_visit`/`sra_highlights` stores. `orchestrator.js` feeds it fr
 `paragraph-tracker.js` `transition.left` signal that already drives `intervention-policy.js`'s
 session cap (item 10) and `comprehension-monitor.js`. Verified in a real Chromium load that the
 accumulated count survives a `location.reload()`-equivalent navigation with `?utm_source=` appended.
+
+✅ **The quiz page is implemented** — `src/content/quiz-store.js` (IndexedDB, behind an injectable
+`{put, get, getAll, delete}` backend so it is unit-testable without a real IndexedDB, which jsdom
+does not implement — `createIndexedDBBackend()` is the real one, exercised only by the browser
+check), `src/content/calibration-copy.js` (the four-outcome copy, pulled out of `question-card.js`
+so the quiz page and the floating card cannot say different things), and `src/popup/quiz.html`/
+`.js`. Generation lives in `content.js`'s `runQuiz()`, called from either entry point (the offer
+card's own button, or the popup's via a new `startQuiz` message) — one place selects passages and
+makes the one server call, not two copies of that logic. Selection reuses
+`sessionRecall.select(8)`; the picked paragraphs are joined into **one passage** and sent in **one**
+`fetchQuestions()` call with `count: 8` — reusing the existing `/api/questions` contract (which
+already accepts a passage and a count) rather than inventing a batch endpoint the server does not
+have. The server's own contract caps `count` at 5 (`clampCount` in `tests/contract/questions.js`),
+so a real deployment may return fewer than 8; fewer than **5** is treated as a generation failure
+(no quiz shown) rather than a thin one. The generated questions are handed to the quiz page through
+a short-lived `chrome.storage.local` key (`sra_quiz_pending` — passage text never touches disk, only
+the *questions* the one generation call produced), which `quiz.js` immediately persists into
+IndexedDB via `quiz-store.js` and clears. Answering reuses `question-card.js`'s own
+commit-time-confidence flow and CSS classes verbatim (select is tentative, the confidence step
+commits and grades, a correct answer is confirmation-only at every confidence level — items 12/13's
+rules hold here unchanged, pinned by reusing the same markup rather than a parallel implementation
+that could drift). Results show a plain factual tally ("4 of 6 correct") — never a percentage, never
+compared across sessions or documents. Deletion (per-quiz and all-at-once, both reachable from the
+results view) calls `quiz-store.js`'s `deleteOne`/`deleteAll`, which remove the IndexedDB record
+outright; verified in a real Chromium load that a deleted quiz stays gone across a page reload, not
+just removed from the in-memory view. Privacy copy updated in the same change: README's Privacy
+section, a factual (not policy-language) lead added to `PRIVACY.md`'s existing TODO scaffold, and an
+in-product note on the quiz page itself.
 
 - **Offered at end of reading, and triggerable from the popup.** Both read the **same coverage
   threshold from one function**. If they diverge, the overlay says ready while the button says no.
@@ -470,7 +497,7 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               is now simply never fed one
     │   ├── reading-calibration.js 188 — WPM calibration, self-paced only (the gaze-training
     │   │                               mode that used to pace the reader is gone)
-    │   ├── question-card.js      234 — the retrieval question card; commit-time confidence step
+    │   ├── question-card.js      220 — the retrieval question card; commit-time confidence step
     │   ├── dyslexia-utils.js     136
     │   ├── overlay-utils.js      132
     │   ├── pdf-handler.js        130 — partially wired, see defects
@@ -486,6 +513,11 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               bottom of the page, coverage-gate.js ready, not yet offered
     │   │                               for this document. Reader-initiated once shown; never touches
     │   │                               intervention-policy.js
+    │   ├── quiz-store.js          185 — the quiz record: IndexedDB behind an injectable backend,
+    │   │                               no passage text in the stored shape, deleteOne/deleteForDocument/
+    │   │                               deleteAll all actually remove rows
+    │   ├── calibration-copy.js     28 — the four-outcome confidence copy, shared by question-card.js
+    │   │                               and the quiz page so the wording cannot drift between them
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   └── telemetry/
@@ -504,12 +536,14 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── progression-entropy.js 76 — session shape
     │       ├── scroll-dynamics.js     59 — scroll jerk
     │       └── residual-distribution.js 53 — NOT a detector. Per-reader pace thresholds
-    ├── src/popup/             popup.js, notes.js, 7 HTML pages
+    ├── src/popup/             popup.js, notes.js, 8 HTML pages
     │   ├── diagnostics.html/.js  version, masked token + delete, local settings, recent
     │   │                          AI-call failures — safe to screenshot, no URLs/titles/
     │   │                          passage text; opened from popup.html's Developer section
-    │   └── diagnostics-format.js pure formatting helpers (maskToken, relativeTime,
-    │                              escapeHtml) split out so they are unit-testable alone
+    │   ├── diagnostics-format.js pure formatting helpers (maskToken, relativeTime,
+    │   │                          escapeHtml) split out so they are unit-testable alone
+    │   └── quiz.html/.js         the quiz page — reuses question-card.js's confidence-commit
+    │                              markup/CSS and calibration-copy.js; persists via quiz-store.js
     ├── src/shared/
     │   ├── config.js          the one place the backend origin is defined; classic script,
     │   │                       loaded before content.js, background.js and popup.js
@@ -635,7 +669,7 @@ PDF and PPTX have not been verified end to end. **Verify before building file im
 
 ### Convention drift
 
-`content.js` is **1485 lines** — down from 1754 after the gaze-path removal deleted roughly 280
+`content.js` is **1554 lines** — down from 1754 after the gaze-path removal deleted roughly 280
 lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
 Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 424); it was six
 before that removal. Settings live in `content.js` as loose `let`s read through accessors
@@ -646,7 +680,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-375 tests pass, in 22 files (two classifier-guard files were deleted alongside the classifier they
+391 tests pass, in 25 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
