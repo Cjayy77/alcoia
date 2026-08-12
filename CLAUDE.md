@@ -476,13 +476,21 @@ passes against the detector in isolation and asserts nothing about the engine.
   production origin has been assigned yet. **A developer pointing at a local backend still does
   not edit source or the manifest**: the popup's Settings → Backend URL field
   (`sra_backend_url` in storage) overrides the shipped default at runtime, exactly as before.
-- **All four icon sizes point at one PNG.** `assets/alcoia-mark-lilac.png` serves 16/32/48/128 in
-  both `action.default_icon` and `icons`.
-- **The shipped package contains no LICENSE.** `build.mjs` copies from `alcoia/`; `LICENSE` sits at
-  the repo root. The GPLv3-WebGazer half of this defect is gone now that the gaze path is deleted —
-  `dist/*/` no longer ships 1.7 MB of GPLv3 code with no licence text alongside it — but the client
-  is still AGPL-3.0 and the shipped package still carries no `LICENSE` file for that. Item 6 in the
-  build brief is the mechanical fix (copy it into the build output); not done yet.
+- ⚠️ **Partially fixed: icon sizes are wired to three distinct files, but the pixel content is
+  still a placeholder.** `manifests/base.json`'s `action.default_icon` and `icons` used to point
+  16/32/48/128 all at `assets/alcoia-mark-lilac.png` — one image, rescaled by the browser at every
+  size, which turns to mush in the toolbar. They now point at three separate files —
+  `assets/icon-16.png`, `assets/icon-48.png` (also used for 32, the closer neighbour), and
+  `assets/icon-128.png` — so a real asset drop-in later needs no manifest change. **But the three
+  files are currently identical copies of the same source PNG**, not separately drawn art, because
+  no such art exists yet. This satisfies the letter of "wire the manifest for three distinct
+  files" while explicitly not claiming the underlying defect (one image asked to look right at
+  every size) is resolved. Ask the owner for real 16px/48px/128px art and replace the three files
+  directly — no code or manifest change needed when that happens.
+- ✅ **Fixed: the shipped package now contains a `LICENSE` file.** `build.mjs` copies the repo
+  root `LICENSE` into `dist/<target>/LICENSE` during `build()`, rather than into `alcoia/` itself
+  — one file to keep current instead of two that can drift. `tests/manifest.test.js` asserts it
+  exists and is non-empty for every target.
 
 ### `gaze-features.js` — deleted, kept here for the record
 
