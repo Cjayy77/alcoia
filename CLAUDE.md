@@ -266,10 +266,15 @@ Enforced in `intervention-policy.js`. Two notes:
 
 ## The quiz — decided
 
-✅ **The coverage gate is implemented** — `alcoia/src/content/coverage-gate.js`. `evaluate(key)` is
-the one function; item 16 still needs to wire it to the end-of-reading overlay and the popup button
-(neither exists yet — the quiz page itself is item 17). Two corrections against the bullets below,
-made while building it:
+✅ **The coverage gate is implemented and wired to both surfaces** — `alcoia/src/content/
+coverage-gate.js`'s `evaluate(key)` is the one function; `quiz-offer.js` decides *when* to show the
+unprompted end-of-reading card (near the bottom of the page, not yet offered for this document) and
+renders it through `content.js`'s `showQuizOffer()`; the popup's "Take the quiz" button
+(`popup.html`/`popup.js`) reads the same `evaluate()` result via a new `checkQuizCoverage` message.
+**The quiz page itself does not exist yet — that is item 17.** Both "Take the quiz" actions currently
+open `src/popup/quiz.html`, which 404s until item 17 lands; this is the same inert-until-later-item
+pattern `upgrade.html`'s pricing buttons already use. Two corrections against the bullets below, and
+one unrelated pre-existing bug found and fixed while building it:
 
 - **Not built on the existing "session continuity" store.** `saveLastVisit()`/`checkLastVisit()` in
   `content.js` — the "↩ Back" toast — key on `window.location.href`, the *entire* URL including the
@@ -284,6 +289,24 @@ made while building it:
   `ready: true`. Coverage by itself is what `receipt.js`'s own header already warns is "trivially
   fakeable in seconds" by a fast scroll-to-bottom; requiring dwell alongside it is what actually
   distinguishes that from reading.
+
+✅ **Fixed: `content.js`'s `chrome.runtime.onMessage` listener silently discarded every
+`.action`-based message.** Its top-line guard was `if (!msg?.type) return;`, but `sessionRecall`,
+`showReceipt`, `recallStats` and the new `checkQuizCoverage` all key on `msg.action`, not
+`msg.type` — every one of them was unreachable via a real `chrome.runtime.sendMessage`. In practice
+this meant popup.html's **recallBtn and receiptBtn buttons did nothing when clicked**: the busy
+label would flash and revert, popup stayed open, no error surfaced anywhere. It went unnoticed
+because the *same features*, reached via the Alt+R/Alt+I keyboard shortcuts, call the underlying
+function directly in the same page rather than through this listener, so the keyboard path always
+worked and no test had ever driven the message path for real — this item's browser check
+(`chrome.tabs.sendMessage` to `checkQuizCoverage`) is the first one that did, and immediately hit
+`"The message port closed before a response was received."` Fixed by widening the guard to
+`if (!msg?.type && !msg?.action) return;`. Also removed the outer listener's stray `async` — an
+async listener function always returns a Promise, not the literal `true` Chrome checks for, which
+would have silently broken *every* branch's `return true` regardless of this guard; every branch's
+own async work already ran inside an inner `(async () => {...})()`, so nothing else changed.
+Pinned by a new assertion in `tests/browser/smoke.mjs` that sends `{ action: 'recallStats' }` via a
+real `chrome.tabs.sendMessage` and checks for `status: "ok"`.
 
 Persisted in `chrome.storage.local` under `sra_doc_coverage`, keyed by `documentKey()`, capped at
 150 documents (LRU-evicted) and 800 paragraph fingerprints per document — the same cap shape as the
@@ -436,7 +459,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
     │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
     │   │                               gaze branch (see the migration note above)
-    │   ├── orchestrator.js       266 — detectors, engine, budget, the one subscriber
+    │   ├── orchestrator.js       299 — detectors, engine, budget, the one subscriber; also drives
+    │   │                               coverage-gate.js and quiz-offer.js from the same paragraph
+    │   │                               signal (right at the ~300-line convention ceiling)
     │   ├── comprehension-monitor.js 300 — pace vs. difficulty vs. personal baseline
     │   ├── receipt.js            282 — reader-owned session record + preview
     │   ├── reading-map.js        255 — sidebar minimap
@@ -457,6 +482,10 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               dismissals, also exploration sampling (EXPLORATION_SAMPLE_RATE)
     │   ├── coverage-gate.js       152 — the one "read enough to test" function; documentKey() is
     │   │                               hostname+pathname only, deliberately not window.location.href
+    │   ├── quiz-offer.js           85 — when to show the unprompted end-of-reading card: near the
+    │   │                               bottom of the page, coverage-gate.js ready, not yet offered
+    │   │                               for this document. Reader-initiated once shown; never touches
+    │   │                               intervention-policy.js
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   └── telemetry/
@@ -606,7 +635,7 @@ PDF and PPTX have not been verified end to end. **Verify before building file im
 
 ### Convention drift
 
-`content.js` is **1471 lines** — down from 1754 after the gaze-path removal deleted roughly 280
+`content.js` is **1485 lines** — down from 1754 after the gaze-path removal deleted roughly 280
 lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
 Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 424); it was six
 before that removal. Settings live in `content.js` as loose `let`s read through accessors
@@ -617,7 +646,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-362 tests pass, in 21 files (two classifier-guard files were deleted alongside the classifier they
+375 tests pass, in 22 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
