@@ -266,6 +266,32 @@ Enforced in `intervention-policy.js`. Two notes:
 
 ## The quiz — decided
 
+✅ **The coverage gate is implemented** — `alcoia/src/content/coverage-gate.js`. `evaluate(key)` is
+the one function; item 16 still needs to wire it to the end-of-reading overlay and the popup button
+(neither exists yet — the quiz page itself is item 17). Two corrections against the bullets below,
+made while building it:
+
+- **Not built on the existing "session continuity" store.** `saveLastVisit()`/`checkLastVisit()` in
+  `content.js` — the "↩ Back" toast — key on `window.location.href`, the *entire* URL including the
+  query string, so it is not actually robust to a `?utm_source=` despite this section describing
+  continuity as already solved. `coverage-gate.js` defines its own key (`documentKey()`: hostname +
+  pathname only, no search, no hash) rather than inheriting one that would silently fail the very
+  requirement two bullets below. That older toast is unrelated to the quiz and was left as-is —
+  fixing its key is a separate, unscoped change.
+- **Gated on coverage AND dwell, not coverage alone.** `evaluate()` requires both a paragraph-
+  coverage percentage (default 60%, prose paragraphs only — `paragraphTracker.count({ excludeMedia:
+  true })` is the denominator) and a minimum accumulated dwell time (default 60s) before returning
+  `ready: true`. Coverage by itself is what `receipt.js`'s own header already warns is "trivially
+  fakeable in seconds" by a fast scroll-to-bottom; requiring dwell alongside it is what actually
+  distinguishes that from reading.
+
+Persisted in `chrome.storage.local` under `sra_doc_coverage`, keyed by `documentKey()`, capped at
+150 documents (LRU-evicted) and 800 paragraph fingerprints per document — the same cap shape as the
+existing `sra_last_visit`/`sra_highlights` stores. `orchestrator.js` feeds it from the same
+`paragraph-tracker.js` `transition.left` signal that already drives `intervention-policy.js`'s
+session cap (item 10) and `comprehension-monitor.js`. Verified in a real Chromium load that the
+accumulated count survives a `location.reload()`-equivalent navigation with `?utm_source=` appended.
+
 - **Offered at end of reading, and triggerable from the popup.** Both read the **same coverage
   threshold from one function**. If they diverge, the overlay says ready while the button says no.
 - **Gated on accumulated coverage for the document, not for the visit.** Session continuity already
@@ -429,6 +455,8 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               (baseAllowance + earned units, capped at absoluteCeiling
     │   │                               ~25), dismissal-aware backoff on consecutive question-card
     │   │                               dismissals, also exploration sampling (EXPLORATION_SAMPLE_RATE)
+    │   ├── coverage-gate.js       152 — the one "read enough to test" function; documentKey() is
+    │   │                               hostname+pathname only, deliberately not window.location.href
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   └── telemetry/
@@ -436,8 +464,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── text-difficulty.js    185 — NOT a detector. FK + syntactic load
     │       ├── response-signals.js   124 — TIER 1, not telemetry. Placement is historical
     │       ├── session-recall.js     117 — recall pool (in-memory)
-    │       ├── paragraph-tracker.js  158 — which paragraph is being read; figures/tables/pre are
-    │       │                             tracked landmarks with media: true, not measured as prose
+    │       ├── paragraph-tracker.js  162 — which paragraph is being read; figures/tables/pre are
+    │       │                             tracked landmarks with media: true, not measured as prose;
+    │       │                             count({ excludeMedia: true }) feeds coverage-gate.js
     │       ├── interaction-signals.js 100 — selection, copy, blur/return
     │       ├── cursor-tracking.js    101 — pointer-Y for paragraph-tracker's override; no
     │       │                              signal()/corroborating-type surface (the dead one was
@@ -588,7 +617,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-343 tests pass, in 20 files (two classifier-guard files were deleted alongside the classifier they
+362 tests pass, in 21 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
