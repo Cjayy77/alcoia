@@ -262,6 +262,45 @@ Enforced in `intervention-policy.js`. Two notes:
   anything reached the screen. **Preserve that seam** — it makes the invariant structural rather
   than remembered.
 
+### Snooze — decided, implemented
+
+✅ **Implemented.** `alcoia/src/content/snooze.js` — a small, explicit, reader-chosen pause,
+worth having before any inferred tolerance adaptation: it is a signal no inference engine
+produces better, because the reader states it directly. Persisted in `chrome.storage.local`
+(`sra_snooze_until`), so it does survive a browser restart; "no silent persistence" is satisfied
+by always showing the true remaining time wherever it is displayed, never a stale label.
+
+- **Suppresses only the final render step** — `content.js`'s `onIntervention` checks
+  `snoozeControl.isActive()` right after the existing `!assistantEnabled` check and returns
+  `false` (nothing shown, budget not spent) if snoozed. Detection, coverage tracking and the quiz
+  gate all keep running above that line — turning those off too would mean a reader who snoozes
+  never reaches the quiz gate, a worse outcome than a paused reminder.
+- **Two entry points, one duration list.** `SNOOZE_OPTIONS` (15 minutes / 1 hour / rest of today —
+  "rest of today" computed from local midnight at the moment it's chosen, not a fixed offset) is
+  canonical in `snooze.js`. `question-card.js` imports it directly for the card's own "Snooze
+  reminders" control (revealed on click, matching the confidence-step interaction pattern). The
+  popup can't import it — it is a classic script, not a module — so it sends only an option `id`
+  via a `snoozeReminders` message, and `content.js` resolves the actual duration from
+  `SNOOZE_OPTIONS`, keeping the duration math in exactly one place regardless of entry point.
+- **Snoozing counts as a dismissal for the backoff above.** From the card, choosing a duration
+  routes through the same `dismiss()` question-card.js already uses for "Skip this" — which
+  already calls `recordDismissal()` — so no separate bookkeeping call is needed there. The card's
+  snooze control stays available *after* answering too (for "stop bothering me now that I've
+  answered this one"); `dismiss()` post-commit is a no-op beyond closing the card, since answering
+  already counted as engagement, not evasion. From the popup, with no open card to dismiss, the
+  `snoozeReminders` handler calls `interventionPolicy.recordDismissal()` explicitly.
+- **Never auto-renews.** Nothing in `snooze.js` ever calls its own `snooze()`; only `cancel()` and
+  the two entry points above touch state, and `cancel()` is only ever called explicitly.
+- **Visible and cancellable.** A confirmation toast (`ui-controller.js`'s `showStatusToast`) fires
+  when a snooze starts; the popup's Reminders section shows "Snoozed until HH:MM" with a Cancel
+  button whenever one is active, reading the same `getSnoozeStatus` message both entry points
+  produce.
+
+Verified in a real Chromium load: a real interruption's own snooze control dismisses it, shows the
+toast, and suppresses further interruptions through several more struggle-shaped scrolls, while
+coverage accumulation (the same store `coverage-gate.js` reads) keeps growing throughout —
+confirming detection was never touched.
+
 ---
 
 ## The quiz — decided
@@ -497,7 +536,8 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               is now simply never fed one
     │   ├── reading-calibration.js 188 — WPM calibration, self-paced only (the gaze-training
     │   │                               mode that used to pace the reader is gone)
-    │   ├── question-card.js      220 — the retrieval question card; commit-time confidence step
+    │   ├── question-card.js      251 — the retrieval question card; commit-time confidence step,
+    │   │                               also the card's own snooze control (item 18)
     │   ├── dyslexia-utils.js     136
     │   ├── overlay-utils.js      132
     │   ├── pdf-handler.js        130 — partially wired, see defects
@@ -518,6 +558,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               deleteAll all actually remove rows
     │   ├── calibration-copy.js     28 — the four-outcome confidence copy, shared by question-card.js
     │   │                               and the quiz page so the wording cannot drift between them
+    │   ├── snooze.js               90 — explicit reader-chosen pause; SNOOZE_OPTIONS is canonical,
+    │   │                               resolved by content.js regardless of entry point; suppresses
+    │   │                               only the render step, never detection/coverage
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   └── telemetry/
@@ -669,9 +712,9 @@ PDF and PPTX have not been verified end to end. **Verify before building file im
 
 ### Convention drift
 
-`content.js` is **1554 lines** — down from 1754 after the gaze-path removal deleted roughly 280
+`content.js` is **1616 lines** — down from 1754 after the gaze-path removal deleted roughly 280
 lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
-Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 424); it was six
+Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437); it was six
 before that removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
@@ -680,7 +723,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-391 tests pass, in 25 files (two classifier-guard files were deleted alongside the classifier they
+409 tests pass, in 26 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
