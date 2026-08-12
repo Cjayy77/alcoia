@@ -301,6 +301,46 @@ toast, and suppresses further interruptions through several more struggle-shaped
 coverage accumulation (the same store `coverage-gate.js` reads) keeps growing throughout —
 confirming detection was never touched.
 
+### Keyword highlighting in the post-failure explanation — decided, implemented
+
+✅ **Implemented.** `alcoia/src/content/keyword-highlight.js` — 2-4 load-bearing terms, sage
+(`--alc-sage`), highlighted in `question.explanation` on the wrong-answer path only. Never on a
+correct answer (that path never reaches this module at all — item 12's rule), never in the
+question text, never in the options, and never in the quoted `.sra-q-span` — that span is the
+passage itself, verbatim, and highlighting words already in the source text would blur the line
+between "the system's own emphasis" and "words the author wrote," which is exactly what
+`--alc-sage`'s reserved meaning depends on not happening.
+
+- **Client-side heuristic, not a server field.** The question/explanation contract
+  (`tests/contract/questions.js`) has no "key terms" field, and adding one is server work — out of
+  scope here, per the item's own instruction to say so and stop rather than build around it.
+  `pickLoadBearingTerms()` instead picks the longest, least-common, non-stopword words itself: a
+  heuristic good enough to draw the eye to two or three substantive words, not a claim about which
+  words actually matter most. Never fewer than 2 or more than 4; text with fewer than 2 qualifying
+  candidates gets no highlighting at all rather than one lonely span.
+- **Self-selects out of non-Latin scripts.** The candidate regex only matches Latin-ish letters, so
+  a CJK/Thai/etc. explanation naturally yields zero candidates and degrades to plain escaped text —
+  the same invariant-5 instinct as everywhere else (no signal beats a guessed one). This
+  incidentally solves a real plumbing problem: `quiz.js` runs in a separate extension page with no
+  access to the article document's `lang` attribute, and the self-selecting regex means no language
+  parameter ever needs to cross that boundary.
+- **Never renders model output as HTML.** `wrapTerms()` operates on the *already-escaped* string
+  (`esc(text)` runs first) and only ever introduces its own literal `<span class="sra-term">` —
+  it does not parse or trust anything the server returned as markup.
+- **`<span>`, not `<mark>`.** `dyslexia-utils.js`'s `applyDyslexiaCSS()` selector list includes
+  `span` but not `mark`; using `<span class="sra-term">` means the highlighted term still gets the
+  reader's dyslexia font override where a `<mark>` would silently opt out of it.
+- **Wired in three places, one function.** `question-card.js`'s `revealAnswer()` (the inline
+  explanation) and `offerExplanation()` (the fuller fetched one), plus `quiz.js`'s inline reveal and
+  its results-view per-question explanation — all four call sites go through the same
+  `renderHighlightedExplanation(text, esc)`, so wording and highlighting cannot drift between the
+  floating card and the quiz page.
+
+Verified in a real Chromium load in both directions: a normal correct answer shows the confirmation
+copy only, with no `.sra-term` anywhere on the page; a forced wrong answer (`WRONG=1` smoke mode)
+shows the explanation with terms highlighted, still absent from the question text, the options, and
+the quoted span.
+
 ---
 
 ## The quiz — decided
@@ -536,8 +576,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               is now simply never fed one
     │   ├── reading-calibration.js 188 — WPM calibration, self-paced only (the gaze-training
     │   │                               mode that used to pace the reader is gone)
-    │   ├── question-card.js      251 — the retrieval question card; commit-time confidence step,
-    │   │                               also the card's own snooze control (item 18)
+    │   ├── question-card.js      262 — the retrieval question card; commit-time confidence step,
+    │   │                               also the card's own snooze control (item 18) and, on the
+    │   │                               wrong-answer path only, keyword highlighting (item 19)
     │   ├── dyslexia-utils.js     136
     │   ├── overlay-utils.js      132
     │   ├── pdf-handler.js        130 — partially wired, see defects
@@ -561,6 +602,10 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── snooze.js               90 — explicit reader-chosen pause; SNOOZE_OPTIONS is canonical,
     │   │                               resolved by content.js regardless of entry point; suppresses
     │   │                               only the render step, never detection/coverage
+    │   ├── keyword-highlight.js    91 — 2-4 load-bearing terms, sage, on the wrong-answer
+    │   │                               explanation only; client-side heuristic (no server field
+    │   │                               exists for this); Latin-only regex self-selects out of
+    │   │                               CJK/Thai text rather than guessing at word boundaries
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   └── telemetry/
@@ -723,9 +768,10 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-409 tests pass, in 26 files (two classifier-guard files were deleted alongside the classifier they
+431 tests pass, in 25 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
-failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
+failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js and
+keyword-highlight.test.js are new). `npm run lint` exits 0 with 4 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
 `npm test` and `npm run lint` rather than trusting this line.
 
