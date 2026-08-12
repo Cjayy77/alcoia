@@ -280,6 +280,16 @@ Enforced in `intervention-policy.js`. Two notes:
 
 ## Confidence calibration — decided shape
 
+✅ **Implemented in `question-card.js`.** Clicking an option only selects it (`.sra-q-selected`);
+grading and reveal happen once, from a confidence step that appears below the options with two
+rating buttons ('low'/'high') and a "Rather not say" skip, all committing via the same `commit()`
+path so no branch can grade without going through it. `response-signals.js`'s `answer()` takes
+`confidence` as a third argument and normalizes anything other than the literal strings `'low'` /
+`'high'` to `null` — never a guess. The four-outcome copy table below lives in `question-card.js`
+as `CALIBRATION_COPY`; the skipped-rating case falls back to the bare `"That's right."` /
+`"Not quite."` copy from item 12. Pinned by `tests/question-card.test.js` and the commit-time-
+confidence describe block in `tests/response-signals.test.js`.
+
 **Confidence is captured at commit time**, not as a post-answer probe: one card, answer and
 confidence submitted together, graded afterward.
 
@@ -397,7 +407,7 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               is now simply never fed one
     │   ├── reading-calibration.js 188 — WPM calibration, self-paced only (the gaze-training
     │   │                               mode that used to pace the reader is gone)
-    │   ├── question-card.js      150 — the retrieval question card
+    │   ├── question-card.js      234 — the retrieval question card; commit-time confidence step
     │   ├── dyslexia-utils.js     136
     │   ├── overlay-utils.js      132
     │   ├── pdf-handler.js        130 — partially wired, see defects
@@ -558,7 +568,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-304 tests pass, in 18 files (two classifier-guard files were deleted alongside the classifier they
+322 tests pass, in 18 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
