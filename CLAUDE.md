@@ -581,7 +581,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               wrong-answer path only, keyword highlighting (item 19)
     │   ├── dyslexia-utils.js     136
     │   ├── overlay-utils.js      132
-    │   ├── pdf-handler.js        130 — partially wired, see defects
+    │   ├── pdf-handler.js        138 — extraction verified end to end (see Known defects); its own
+    │   │                               paragraph model is invisible to paragraph-tracker.js, so
+    │   │                               telemetry/coverage/questions never reach a PDF this way
     │   ├── tts-handler.js        126
     │   ├── intervention-policy.js 267 — the interruption budget, one place: session cap scales
     │   │                               with tracked paragraphs / measured reading time
@@ -607,7 +609,7 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                               exists for this); Latin-only regex self-selects out of
     │   │                               CJK/Thai text rather than guessing at word boundaries
     │   ├── session-tracker.js     91
-    │   ├── pptx-handler.js        78 — partially wired, see defects
+    │   ├── pptx-handler.js        85 — same verified shape and same gap as pdf-handler.js
     │   └── telemetry/
     │       ├── segmentation.js       225 — NOT a detector. Word/sentence counting, Intl.Segmenter
     │       ├── text-difficulty.js    185 — NOT a detector. FK + syntactic load
@@ -641,8 +643,12 @@ Verified by reading the tree. Line counts current as of this writing.
     │                           diagnostics page; sanitises out any http(s) URL before
     │                           storing, written to from content.js's callBackend()
     ├── src/styles/            fonts.css, overlay.css, panel.css, popup.css (legacy)
-    └── src/libs/              pdfjs, jszip, fonts/ (OFL 1.1) — webgazer.min.js (GPLv3, 1.7 MB)
-                                is deleted; see the migration note above
+    ├── src/libs/              pdfjs, jszip, fonts/ (OFL 1.1) — webgazer.min.js (GPLv3, 1.7 MB)
+    │                           is deleted; see the migration note above
+    ├── src/pdf-viewer/        viewer.html/.js — standalone local-file PDF viewer, reached only via
+    │                           background.js's file://*.pdf redirect; no content.js/orchestrator.js
+    │                           wired in (see Known defects: pdf-handler.js / pptx-handler.js)
+    └── src/pptx-viewer/       viewer.html/.js — same shape, same gap, for file://*.pptx
 ```
 
 ✅ **The gaze path is deleted, not demoted.** Removed entirely, not just from the tree above:
@@ -749,11 +755,74 @@ are deleted rather than fixed — see the migration note under "Signal hierarchy
 record of why "tune the thresholds" was never going to be the right fix for that module, in case a
 future gaze-adjacent feature is proposed and the same reasoning applies.
 
-### `pdf-handler.js` / `pptx-handler.js` — partially wired
+### `pdf-handler.js` / `pptx-handler.js` — verified end to end; the primary intervention does not reach either
 
-Both carry `no-unused-vars` warnings for `backendUrl`, `fetchSummary` and `renderPopup`, suggesting
-they accept dependencies they never use. Extraction, paragraph matching and the question path for
-PDF and PPTX have not been verified end to end. **Verify before building file import on top.**
+✅ **Verified, not assumed.** The `no-unused-vars` warnings this section used to describe
+(`backendUrl`/`fetchSummary`/`renderPopup`) are gone — both files' headers already record why
+(removed rather than wired up; see "Access control" above) — and `npm run lint`'s current 4
+warnings are none of them. What follows replaces the old "not verified end to end" note with what
+was actually checked in a real Chromium load.
+
+- **Manual extraction works.** A synthetic page shaped exactly like PDF.js's real `.textLayer`
+  output (absolutely positioned `<span>`s, zero `<p>`/`<li>`/`<blockquote>`) served at a URL ending
+  `.pdf` triggers `detectAndInitHandlers()` correctly; `pdf-handler.js`'s `indexTextLayers()` groups
+  the spans into paragraphs, and pressing **Alt+S** (the one manual trigger that routes through
+  `findParagraphAt()` → `pdfHandler.getParagraphText()`) produced a real summary popup with the
+  extracted text, fetched from the real mock backend. `pptx-handler.js`'s own overlay-box extraction
+  is architecturally identical (own paragraph model, own `findParagraphAt`) and was not re-verified
+  separately, since the code path it shares with `pdf-handler.js` (`content.js`'s
+  `triggerAIForParagraph`) is the part that was actually in question.
+- **Telemetry, detection, coverage and question generation never reach either format — verified,
+  not inferred.** The same fixture that proved extraction works also proved this: `document.
+  querySelectorAll('p, li, blockquote')` — `paragraph-tracker.js`'s *only* selector — returned
+  **zero** elements on it. `paragraph-tracker.js` is what feeds `comprehension-monitor.js` (pace vs.
+  difficulty), `coverage-gate.js` (the quiz gate), `quiz-offer.js`, and — via
+  `orchestrator.js`'s `syncParagraph()` — the state engine itself. `pdf-handler.js`/`pptx-handler.js`
+  build their own separate paragraph model (rects computed from `.textLayer` spans / `.sra-pptx-box`
+  overlay divs) that `paragraph-tracker.js` has no way to see. The practical consequence: **the
+  retrieval question — this product's stated primary intervention — cannot appear on a PDF or PPTX
+  document, ever, through any path.** `orchestrator.js`'s `stateEngine.subscribe` handler only ever
+  sets `target` from `currentParagraph.type === 'dom'` (`content.js`'s `onIntervention`, and the
+  `host.findParagraphAt` fallback inside `orchestrator.js` explicitly discards non-`'dom'` results
+  too), so even if a `struggling` state were somehow reached, there is no code path connecting it to
+  a PDF/PPTX paragraph. In practice the state engine mostly never fires at all on these documents,
+  because `pumpTelemetry()` only runs when a detector produces a signal, and the detectors that
+  matter here (`scrollRegression`, `progressionEntropy`, `comprehensionMonitor`'s speed mismatch)
+  are themselves fed exclusively from `paragraph-tracker.js` transitions. Only the interaction
+  detectors unrelated to paragraphs (`selection`, `copy`, `blur`/`focus`) can still fire, and those
+  alone cannot assert a state. This is not a bug in any one line — it is two independently-correct
+  subsystems (the telemetry pipeline, and the PDF/PPTX handlers) that were never connected, and
+  connecting them is a real design task (whose paragraph model wins, how dwell time attaches to a
+  PDF.js line-band that scrolls differently from a DOM paragraph, whether `coverage-gate.js`'s
+  60%-of-paragraphs math means anything against a page count) — **out of scope here**, the same
+  scale of work as file import itself, not a "clearly broken and small" fix.
+- **Fixed, because it was small and unambiguous: the standalone local-file viewer pages did not run
+  at all.** `background.js` redirects a `file://*.pdf`/`file://*.pptx` navigation to alcoia's own
+  `src/pdf-viewer/viewer.html` / `src/pptx-viewer/viewer.html`. Both pages kept their entire
+  rendering logic in an inline `<script>` block, which MV3's default extension-page CSP
+  (`script-src 'self'`, no override declared in `manifests/base.json`) blocks outright — confirmed
+  in a real Chromium load: the console showed the CSP refusal, `window.pdfjsLib`/`JSZip` never
+  loaded, and the page sat frozen on "Loading PDF…"/"Loading presentation…" forever, **with zero
+  thrown page errors** — another instance of this codebase's own documented failure mode, "absence,
+  not error." Fixed by moving each inline script verbatim into an external `viewer.js` next to its
+  `viewer.html` (`<script src="viewer.js">` — CSP-compliant, MV3 doesn't need a manifest change for
+  a same-origin external script referenced from the extension's own page) — no logic changed, only
+  where it lives. Re-verified in a real Chromium load with a genuine minimal PDF and a genuine
+  minimal PPTX served over HTTP: both viewers now render fully (canvas + extracted text layer for
+  the PDF; parsed title/body for the PPTX slide), zero CSP errors, zero page errors. **These two
+  pages still have no alcoia detection/intervention wired into them at all** — no `content.js`, no
+  `orchestrator.js`, nothing beyond the bare viewer chrome — which is the same gap as the bullet
+  above, one level further out; fixing *that* is, again, out of scope for a verify-and-report item.
+- **Two stale references to the deleted gaze pipeline, fixed in passing** since they were touched by
+  this verification: `pdf-viewer/viewer.html`'s `.textLayer` comment ("for selection + gaze
+  hit-testing") and `pptx-handler.js`'s header ("so gaze mapping can work") — both described a
+  feature that no longer exists (see "Signal hierarchy" above). Reworded to describe what the text
+  layer / overlay boxes are actually for now: selection, and `findParagraphAt()` hit-testing.
+
+**Still true, and still worth building instead of deferring:** whichever design resolves the
+paragraph-model mismatch above should also decide how `coverage-gate.js`'s "read enough to test"
+math applies to a document with pages instead of continuous scroll — that question was open before
+this verification and remains open after it.
 
 ### Convention drift
 
