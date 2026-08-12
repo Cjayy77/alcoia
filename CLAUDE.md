@@ -417,7 +417,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── paragraph-tracker.js  158 — which paragraph is being read; figures/tables/pre are
     │       │                             tracked landmarks with media: true, not measured as prose
     │       ├── interaction-signals.js 100 — selection, copy, blur/return
-    │       ├── cursor-tracking.js     93 — pointer-Y. Its signal() output is DEAD, see defects
+    │       ├── cursor-tracking.js    101 — pointer-Y for paragraph-tracker's override; no
+    │       │                              signal()/corroborating-type surface (the dead one was
+    │       │                              deleted, not left unreachable — see Known defects)
     │       ├── scroll-regression.js   76 — paragraph-index returns
     │       ├── progression-entropy.js 76 — session shape
     │       ├── scroll-dynamics.js     59 — scroll jerk
@@ -453,10 +455,11 @@ popup-side content-script reinjection button, both gone. Package size: **~4.7 MB
 target, almost entirely the deleted 1.7 MB WebGazer bundle.
 
 **Detector count, precisely.** Eleven files in `telemetry/`, but only **eight** export a `create*`
-factory; of those, `response-signals.js` is tier 1 rather than telemetry and `cursor-tracking.js`'s
-signal is not consumed. So **six live telemetry detectors** feed the engine, plus
-`comprehension-monitor.js`, the primary sensor, which lives outside `telemetry/`. Do not describe
-this as "eleven detectors."
+factory; of those, `response-signals.js` is tier 1 rather than telemetry, and `cursor-tracking.js`
+has no `signal()`/corroborating-type surface at all — it exposes `getPointerY()`/`isTracking()`,
+consumed directly by `paragraph-tracker.js` as a reading-position override, never by the state
+engine. So **six live telemetry detectors** feed the engine, plus `comprehension-monitor.js`, the
+primary sensor, which lives outside `telemetry/`. Do not describe this as "eleven detectors."
 
 **A build step exists.** `build.mjs` copies the source tree verbatim per target — not a bundler,
 nothing transpiled — and writes a per-target `manifest.json` from `manifests/base.json` +
@@ -477,11 +480,21 @@ without a migration. `mode=tldr` in the summarise request is an API contract, no
 
 ### Dead code that reads as wired
 
-**`cursor_reading` is dead twice over.** `telemetry/cursor-tracking.js` emits it. `state-engine.js`
-lists it in `CORROBORATING_TYPES` — excluding it from asserting — but there is **no entry in
-`CORROBORATION`**, so the loop skips it unconditionally. And `orchestrator.js` never calls
-`cursorTracker.signal()`; it uses only `getPointerY()`. `tests/cursor-and-progression.test.js`
-passes against the detector in isolation and asserts nothing about the engine.
+- ✅ **Resolved: `cursor_reading`.** Used to be dead twice over — `telemetry/cursor-tracking.js`
+  emitted a `type: 'cursor_reading'` object via a `signal()` method; `state-engine.js` listed the
+  type in `CORROBORATING_TYPES` (excluding it from asserting) but had no matching `CORROBORATION`
+  entry, so the loop skipped it unconditionally; and `orchestrator.js` never called
+  `cursorTracker.signal()` in the first place, using only `getPointerY()`. Nothing had ever decided
+  what cursor tracking should corroborate in the engine, so inventing that policy retroactively
+  would have been guessing. The dead emission path — `signal()` and the `cursor_reading` object —
+  is deleted outright (see `cursor-tracking.js`'s header comment); the module's only surface now is
+  `update()` / `getPointerY()` / `isTracking()` / `reset()`, consumed by `paragraph-tracker.js` as a
+  reading-position override. `state-engine.js` carries no `cursor_reading` reference at all — grep
+  confirms it. `tests/cursor-and-progression.test.js` pins the current surface directly (no
+  `signal()` export to test against). If cursor evidence is wanted in the engine again later, that
+  is a `state-engine.js` decision — a bonus, an evidence sentence, the states it applies to — made
+  on purpose, the same way `selection`/`copy`/`scroll_jerk`/`progression` were, not a shape left
+  lying around from before.
 
 ### Configuration
 
@@ -545,7 +558,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-283 tests pass, in 17 files (two classifier-guard files were deleted alongside the classifier they
+298 tests pass, in 17 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
@@ -561,7 +574,8 @@ failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0
 3. Every word count was `text.split(/\s+/)`, so a 600-character Chinese paragraph counted as **one
    word** and fell under every threshold. The extension loaded, ran and did nothing on a large
    fraction of the web. Nothing threw. Every test passed.
-4. `cursor_reading` — currently live in the tree.
+4. ✅ **Resolved:** `cursor_reading` — the dead emission path is now deleted rather than live in
+   the tree; see "Dead code that reads as wired" above.
 
 **Still open:**
 
