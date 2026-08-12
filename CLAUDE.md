@@ -402,8 +402,11 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── overlay-utils.js      132
     │   ├── pdf-handler.js        130 — partially wired, see defects
     │   ├── tts-handler.js        126
-    │   ├── intervention-policy.js 159 — the interruption budget, one place; also exploration
-    │   │                               sampling (EXPLORATION_SAMPLE_RATE)
+    │   ├── intervention-policy.js 267 — the interruption budget, one place: session cap scales
+    │   │                               with tracked paragraphs / measured reading time
+    │   │                               (baseAllowance + earned units, capped at absoluteCeiling
+    │   │                               ~25), dismissal-aware backoff on consecutive question-card
+    │   │                               dismissals, also exploration sampling (EXPLORATION_SAMPLE_RATE)
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   └── telemetry/
