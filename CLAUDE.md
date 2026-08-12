@@ -45,11 +45,17 @@ that optimises for its own silence will achieve it and report success.
    answer resolves to `on_pace`. **A dismissal asserts nothing at all** — declining to be tested
    says nothing about comprehension, and must never be read as success or as struggle.
 2. **Browser telemetry** — reading rate vs. text difficulty and personal baseline, scroll
-   regressions, selection, copy, blur, idle. Precise, always available, no permission needed.
-   **The primary path and the default.**
-3. **Webcam gaze** — scheduled for removal. See *Known defects*.
+   regressions, selection, copy, blur. Precise, always available, no permission needed. **The only
+   detection path.**
 
-If a task appears to invert this hierarchy, stop and ask.
+✅ **Webcam gaze has been removed**, not merely demoted. It used to sit as tier 3 here, corroborating
+telemetry and — in one narrow case — disambiguating an idle-with-focus reader. Both roles are gone:
+there is no sensor, no classifier, no calibration flow that trains one, and no code path that reads
+a gaze coordinate. See "Actual repository state" below for what was deleted and why, including two
+modules (`idle-overlay.js`, `lang-detect.js`) that were not on the removal item's original file list
+but turned out to exist solely to serve the gaze pipeline.
+
+If a task appears to reintroduce gaze, a camera permission, or a webcam-derived signal, stop and ask.
 
 ---
 
@@ -62,18 +68,27 @@ question card, quiz, receipt, popup and extension pages, styles, build.
 
 | Thing | Where | Note |
 |---|---|---|
-| API server | Separate private repo | See migration status below |
+| API server | Separate private repo | Fully moved as of this migration item — see status below |
 | Accounts, entitlements, install tokens, assist counter | Server | Client displays; server decides |
 | Question generation and validation | Server | The client consumes questions; it never authors them |
 | Aggregate class analytics | Server | Cohorts cannot be aggregated on one client |
 | Educator / team portals | Separate web app | The extension never sees the admin console |
 | Pricing, tiers, legal text | Human decision | Scaffold only, escalate |
 
-⚠️ **Migration in progress.** `alcoia/server/` still exists in this tree and is **legacy**. It is
-excluded from the shipped package by `build.mjs`, and `tests/questions.test.js` (31 tests) and
-`tests/receipt.test.js` (24 tests) import from it. Removing it is a sequenced task; until it lands,
-treat `alcoia/server/` as **read-only reference**. Do not extend it. If a task requires a server
-change, say so and stop.
+✅ **Migration complete.** `alcoia/server/` has been deleted from this repository (owner confirmed
+it is already preserved in the separate private server repo before deletion). The API server is no
+longer read-only reference here — it is simply not here. `tests/questions.test.js` (31 tests) and
+`tests/receipt.test.js` (24 tests) now import from `tests/contract/questions.js` and
+`tests/contract/receipt-signing.js` — vendored, dependency-free snapshots of the server's pure
+question-validation and receipt-signing logic, kept only so the client's assumptions about the
+server's contract (the verbatim-span requirement; the receipt canonicalisation format) stay under
+test in this repo. They are not shipped, are not covered by this repo's AGPL grant, and must never
+be imported from shipped code — the client still never authors questions. `build.mjs`'s `EXCLUDE`
+set no longer has a `server` entry, since there is nothing under `alcoia/` left to match. Any task
+that requires a change to server logic is out of scope here; say so and stop.
+
+Deleting the directory from the working tree does not remove it from git history. A history
+rewrite or a fresh repository would be required if that ever matters — not attempted here.
 
 ---
 
@@ -137,6 +152,24 @@ first build. Open architecture decision.
 - Every AI call carries it. **No token, no response.**
 - The server counts against the token and enforces the ceiling.
 
+✅ **Client side implemented.** `alcoia/src/shared/install-token.js` — `sra_install_token` in
+`chrome.storage.local`, checked before every fetch and shared across overlapping callers so several
+tabs waking at once still cost one request, not one each. **Loaded from content.js, not
+background.js**, despite the actual AI-call fetch happening in the background worker: this file is
+a genuine ES module, loaded the same way every other content module is (`loadModule()`, a dynamic
+`import()`), and Chrome disallows dynamic `import()` from inside a service worker outright —
+confirmed directly against real Chromium via `tests/browser/smoke.mjs`, not assumed from the spec.
+content.js resolves the token and passes it to `background.js` as a plain string in the message
+body (`callBackend()` in content.js); `background.js`'s `'summarize'`/`'apiPost'` handler is a dumb
+relay that requires one to already be attached (`X-Alcoia-Install-Token` header) and refuses to
+fetch without it. A 401/403 from the real endpoint is reported back as `tokenRejected`, which
+content.js turns into `installToken.invalidate()` — the automatic version of "the reader deletes it
+and gets a fresh one." Unit tests in `tests/install-token.test.js` cover issuance, the shared
+in-flight dedup, and all three failure modes resolving to `null` rather than throwing.
+`tests/browser/smoke.mjs` gained `FAIL=token` (the token endpoint itself returns 503) alongside the
+existing `FAIL=questions`, plus an always-on check that every AI request the mock server received
+carried the token header.
+
 **The token is issued, not derived.** It is not computed from device or network characteristics.
 The reader holds it, can delete it, and deleting it works — they get a fresh one. It identifies an
 install, not a person or a machine. It is never attached to passage content in logs.
@@ -155,6 +188,18 @@ extension.
 **No visible quota on the free tier.** No counter in the reading UI, no "N remaining", no upgrade
 nag. The ceiling bounds automated abuse; it does not meter readers. The **diagnostics page** is the
 one place the number is visible, for support.
+
+✅ **Diagnostics page implemented** — `alcoia/src/popup/diagnostics.html`/`.js`, opened from
+popup.html's Developer section. Shows extension version, install-token status (masked to its last
+4 characters — this page is required to be safe to screenshot, and the full token is a bearer
+credential even though it identifies an install rather than a person) with a "Delete token" control,
+every local `sra_*` setting, and a capped local log of AI calls that failed silently (invariant 9
+means the reader never sees an error otherwise) via the new `diag-log.js`. **Plan and assist count
+are not shown** — there is no account/entitlements endpoint anywhere in this repository or the
+information to invent its shape, and building one is server work, out of scope here (see Scope).
+The page states this plainly rather than fabricating a number; wiring it up is a follow-on item once
+that endpoint exists. Nothing on the page reads the current tab, so it cannot leak a page's URL,
+title or passage text by construction.
 
 **Metering:** a generated quiz costs **one assist** and must therefore be **one server call** — one
 passage batch in, N questions out. Not one call per question.
@@ -217,9 +262,164 @@ Enforced in `intervention-policy.js`. Two notes:
   anything reached the screen. **Preserve that seam** — it makes the invariant structural rather
   than remembered.
 
+### Snooze — decided, implemented
+
+✅ **Implemented.** `alcoia/src/content/snooze.js` — a small, explicit, reader-chosen pause,
+worth having before any inferred tolerance adaptation: it is a signal no inference engine
+produces better, because the reader states it directly. Persisted in `chrome.storage.local`
+(`sra_snooze_until`), so it does survive a browser restart; "no silent persistence" is satisfied
+by always showing the true remaining time wherever it is displayed, never a stale label.
+
+- **Suppresses only the final render step** — `content.js`'s `onIntervention` checks
+  `snoozeControl.isActive()` right after the existing `!assistantEnabled` check and returns
+  `false` (nothing shown, budget not spent) if snoozed. Detection, coverage tracking and the quiz
+  gate all keep running above that line — turning those off too would mean a reader who snoozes
+  never reaches the quiz gate, a worse outcome than a paused reminder.
+- **Two entry points, one duration list.** `SNOOZE_OPTIONS` (15 minutes / 1 hour / rest of today —
+  "rest of today" computed from local midnight at the moment it's chosen, not a fixed offset) is
+  canonical in `snooze.js`. `question-card.js` imports it directly for the card's own "Snooze
+  reminders" control (revealed on click, matching the confidence-step interaction pattern). The
+  popup can't import it — it is a classic script, not a module — so it sends only an option `id`
+  via a `snoozeReminders` message, and `content.js` resolves the actual duration from
+  `SNOOZE_OPTIONS`, keeping the duration math in exactly one place regardless of entry point.
+- **Snoozing counts as a dismissal for the backoff above.** From the card, choosing a duration
+  routes through the same `dismiss()` question-card.js already uses for "Skip this" — which
+  already calls `recordDismissal()` — so no separate bookkeeping call is needed there. The card's
+  snooze control stays available *after* answering too (for "stop bothering me now that I've
+  answered this one"); `dismiss()` post-commit is a no-op beyond closing the card, since answering
+  already counted as engagement, not evasion. From the popup, with no open card to dismiss, the
+  `snoozeReminders` handler calls `interventionPolicy.recordDismissal()` explicitly.
+- **Never auto-renews.** Nothing in `snooze.js` ever calls its own `snooze()`; only `cancel()` and
+  the two entry points above touch state, and `cancel()` is only ever called explicitly.
+- **Visible and cancellable.** A confirmation toast (`ui-controller.js`'s `showStatusToast`) fires
+  when a snooze starts; the popup's Reminders section shows "Snoozed until HH:MM" with a Cancel
+  button whenever one is active, reading the same `getSnoozeStatus` message both entry points
+  produce.
+
+Verified in a real Chromium load: a real interruption's own snooze control dismisses it, shows the
+toast, and suppresses further interruptions through several more struggle-shaped scrolls, while
+coverage accumulation (the same store `coverage-gate.js` reads) keeps growing throughout —
+confirming detection was never touched.
+
+### Keyword highlighting in the post-failure explanation — decided, implemented
+
+✅ **Implemented.** `alcoia/src/content/keyword-highlight.js` — 2-4 load-bearing terms, sage
+(`--alc-sage`), highlighted in `question.explanation` on the wrong-answer path only. Never on a
+correct answer (that path never reaches this module at all — item 12's rule), never in the
+question text, never in the options, and never in the quoted `.sra-q-span` — that span is the
+passage itself, verbatim, and highlighting words already in the source text would blur the line
+between "the system's own emphasis" and "words the author wrote," which is exactly what
+`--alc-sage`'s reserved meaning depends on not happening.
+
+- **Client-side heuristic, not a server field.** The question/explanation contract
+  (`tests/contract/questions.js`) has no "key terms" field, and adding one is server work — out of
+  scope here, per the item's own instruction to say so and stop rather than build around it.
+  `pickLoadBearingTerms()` instead picks the longest, least-common, non-stopword words itself: a
+  heuristic good enough to draw the eye to two or three substantive words, not a claim about which
+  words actually matter most. Never fewer than 2 or more than 4; text with fewer than 2 qualifying
+  candidates gets no highlighting at all rather than one lonely span.
+- **Self-selects out of non-Latin scripts.** The candidate regex only matches Latin-ish letters, so
+  a CJK/Thai/etc. explanation naturally yields zero candidates and degrades to plain escaped text —
+  the same invariant-5 instinct as everywhere else (no signal beats a guessed one). This
+  incidentally solves a real plumbing problem: `quiz.js` runs in a separate extension page with no
+  access to the article document's `lang` attribute, and the self-selecting regex means no language
+  parameter ever needs to cross that boundary.
+- **Never renders model output as HTML.** `wrapTerms()` operates on the *already-escaped* string
+  (`esc(text)` runs first) and only ever introduces its own literal `<span class="sra-term">` —
+  it does not parse or trust anything the server returned as markup.
+- **`<span>`, not `<mark>`.** `dyslexia-utils.js`'s `applyDyslexiaCSS()` selector list includes
+  `span` but not `mark`; using `<span class="sra-term">` means the highlighted term still gets the
+  reader's dyslexia font override where a `<mark>` would silently opt out of it.
+- **Wired in three places, one function.** `question-card.js`'s `revealAnswer()` (the inline
+  explanation) and `offerExplanation()` (the fuller fetched one), plus `quiz.js`'s inline reveal and
+  its results-view per-question explanation — all four call sites go through the same
+  `renderHighlightedExplanation(text, esc)`, so wording and highlighting cannot drift between the
+  floating card and the quiz page.
+
+Verified in a real Chromium load in both directions: a normal correct answer shows the confirmation
+copy only, with no `.sra-term` anywhere on the page; a forced wrong answer (`WRONG=1` smoke mode)
+shows the explanation with terms highlighted, still absent from the question text, the options, and
+the quoted span.
+
 ---
 
 ## The quiz — decided
+
+✅ **The coverage gate is implemented and wired to both surfaces** — `alcoia/src/content/
+coverage-gate.js`'s `evaluate(key)` is the one function; `quiz-offer.js` decides *when* to show the
+unprompted end-of-reading card (near the bottom of the page, not yet offered for this document) and
+renders it through `content.js`'s `showQuizOffer()`; the popup's "Take the quiz" button
+(`popup.html`/`popup.js`) reads the same `evaluate()` result via a new `checkQuizCoverage` message.
+**The quiz page itself is now implemented too** — `src/popup/quiz.html`/`.js`. Two corrections
+against the bullets below, and one unrelated pre-existing bug found and fixed while building the
+gate:
+
+- **Not built on the existing "session continuity" store.** `saveLastVisit()`/`checkLastVisit()` in
+  `content.js` — the "↩ Back" toast — key on `window.location.href`, the *entire* URL including the
+  query string, so it is not actually robust to a `?utm_source=` despite this section describing
+  continuity as already solved. `coverage-gate.js` defines its own key (`documentKey()`: hostname +
+  pathname only, no search, no hash) rather than inheriting one that would silently fail the very
+  requirement two bullets below. That older toast is unrelated to the quiz and was left as-is —
+  fixing its key is a separate, unscoped change.
+- **Gated on coverage AND dwell, not coverage alone.** `evaluate()` requires both a paragraph-
+  coverage percentage (default 60%, prose paragraphs only — `paragraphTracker.count({ excludeMedia:
+  true })` is the denominator) and a minimum accumulated dwell time (default 60s) before returning
+  `ready: true`. Coverage by itself is what `receipt.js`'s own header already warns is "trivially
+  fakeable in seconds" by a fast scroll-to-bottom; requiring dwell alongside it is what actually
+  distinguishes that from reading.
+
+✅ **Fixed: `content.js`'s `chrome.runtime.onMessage` listener silently discarded every
+`.action`-based message.** Its top-line guard was `if (!msg?.type) return;`, but `sessionRecall`,
+`showReceipt`, `recallStats` and the new `checkQuizCoverage` all key on `msg.action`, not
+`msg.type` — every one of them was unreachable via a real `chrome.runtime.sendMessage`. In practice
+this meant popup.html's **recallBtn and receiptBtn buttons did nothing when clicked**: the busy
+label would flash and revert, popup stayed open, no error surfaced anywhere. It went unnoticed
+because the *same features*, reached via the Alt+R/Alt+I keyboard shortcuts, call the underlying
+function directly in the same page rather than through this listener, so the keyboard path always
+worked and no test had ever driven the message path for real — this item's browser check
+(`chrome.tabs.sendMessage` to `checkQuizCoverage`) is the first one that did, and immediately hit
+`"The message port closed before a response was received."` Fixed by widening the guard to
+`if (!msg?.type && !msg?.action) return;`. Also removed the outer listener's stray `async` — an
+async listener function always returns a Promise, not the literal `true` Chrome checks for, which
+would have silently broken *every* branch's `return true` regardless of this guard; every branch's
+own async work already ran inside an inner `(async () => {...})()`, so nothing else changed.
+Pinned by a new assertion in `tests/browser/smoke.mjs` that sends `{ action: 'recallStats' }` via a
+real `chrome.tabs.sendMessage` and checks for `status: "ok"`.
+
+Persisted in `chrome.storage.local` under `sra_doc_coverage`, keyed by `documentKey()`, capped at
+150 documents (LRU-evicted) and 800 paragraph fingerprints per document — the same cap shape as the
+existing `sra_last_visit`/`sra_highlights` stores. `orchestrator.js` feeds it from the same
+`paragraph-tracker.js` `transition.left` signal that already drives `intervention-policy.js`'s
+session cap (item 10) and `comprehension-monitor.js`. Verified in a real Chromium load that the
+accumulated count survives a `location.reload()`-equivalent navigation with `?utm_source=` appended.
+
+✅ **The quiz page is implemented** — `src/content/quiz-store.js` (IndexedDB, behind an injectable
+`{put, get, getAll, delete}` backend so it is unit-testable without a real IndexedDB, which jsdom
+does not implement — `createIndexedDBBackend()` is the real one, exercised only by the browser
+check), `src/content/calibration-copy.js` (the four-outcome copy, pulled out of `question-card.js`
+so the quiz page and the floating card cannot say different things), and `src/popup/quiz.html`/
+`.js`. Generation lives in `content.js`'s `runQuiz()`, called from either entry point (the offer
+card's own button, or the popup's via a new `startQuiz` message) — one place selects passages and
+makes the one server call, not two copies of that logic. Selection reuses
+`sessionRecall.select(8)`; the picked paragraphs are joined into **one passage** and sent in **one**
+`fetchQuestions()` call with `count: 8` — reusing the existing `/api/questions` contract (which
+already accepts a passage and a count) rather than inventing a batch endpoint the server does not
+have. The server's own contract caps `count` at 5 (`clampCount` in `tests/contract/questions.js`),
+so a real deployment may return fewer than 8; fewer than **5** is treated as a generation failure
+(no quiz shown) rather than a thin one. The generated questions are handed to the quiz page through
+a short-lived `chrome.storage.local` key (`sra_quiz_pending` — passage text never touches disk, only
+the *questions* the one generation call produced), which `quiz.js` immediately persists into
+IndexedDB via `quiz-store.js` and clears. Answering reuses `question-card.js`'s own
+commit-time-confidence flow and CSS classes verbatim (select is tentative, the confidence step
+commits and grades, a correct answer is confirmation-only at every confidence level — items 12/13's
+rules hold here unchanged, pinned by reusing the same markup rather than a parallel implementation
+that could drift). Results show a plain factual tally ("4 of 6 correct") — never a percentage, never
+compared across sessions or documents. Deletion (per-quiz and all-at-once, both reachable from the
+results view) calls `quiz-store.js`'s `deleteOne`/`deleteAll`, which remove the IndexedDB record
+outright; verified in a real Chromium load that a deleted quiz stays gone across a page reload, not
+just removed from the in-memory view. Privacy copy updated in the same change: README's Privacy
+section, a factual (not policy-language) lead added to `PRIVACY.md`'s existing TODO scaffold, and an
+in-product note on the quiz page itself.
 
 - **Offered at end of reading, and triggerable from the popup.** Both read the **same coverage
   threshold from one function**. If they diverge, the overlay says ready while the button says no.
@@ -246,6 +446,16 @@ Enforced in `intervention-policy.js`. Two notes:
 ---
 
 ## Confidence calibration — decided shape
+
+✅ **Implemented in `question-card.js`.** Clicking an option only selects it (`.sra-q-selected`);
+grading and reveal happen once, from a confidence step that appears below the options with two
+rating buttons ('low'/'high') and a "Rather not say" skip, all committing via the same `commit()`
+path so no branch can grade without going through it. `response-signals.js`'s `answer()` takes
+`confidence` as a third argument and normalizes anything other than the literal strings `'low'` /
+`'high'` to `null` — never a guess. The four-outcome copy table below lives in `question-card.js`
+as `CALIBRATION_COPY`; the skipped-rating case falls back to the bare `"That's right."` /
+`"Not quite."` copy from item 12. Pinned by `tests/question-card.test.js` and the commit-time-
+confidence describe block in `tests/response-signals.test.js`.
 
 **Confidence is captured at commit time**, not as a post-answer probe: one card, answer and
 confidence submitted together, graded afterward.
@@ -297,26 +507,34 @@ well the tree recovers its own generator's rules.
 
 ---
 
-## THE TRAP — read before touching the feature set
+## THE TRAP — historical, kept for context on why the removal was done wholesale
 
-`classifier.js` branches on `f.saccade_length`, `f.saccade_std`, `f.velocity_mean`.
+✅ **Resolved: the gaze path — classifier.js, gaze-features.js, gaze-utils.js, webgazer-bootstrap.js,
+webgazer.min.js, sra-page-bridge.js — has been deleted, not patched.** This section used to warn
+against a specific way of getting that wrong; it is kept so the reasoning survives the deletion.
 
-Remove those keys from the extractor without retraining and every comparison becomes
-`undefined <= X`, which evaluates to `false` **without throwing.** The classifier does not crash. It
-routes down one branch forever and keeps emitting confident labels.
+The trap was in `classifier.js`, which branched on `f.saccade_length`, `f.saccade_std`,
+`f.velocity_mean`. Removing those keys from the extractor without retraining made every comparison
+become `undefined <= X`, which evaluates to `false` **without throwing.** The classifier did not
+crash. It routed down one branch forever and kept emitting confident labels:
 
 ```
 classifyGazeState({})                   → { label: 'skimming', confidence: 0.722 }
 focused sample, 3 saccade keys removed  → focused (0.993) becomes skimming (1.000)
 ```
 
-Pinned by `tests/classifier-missing-keys.test.js` and `tests/classifier-feature-contract.test.js`.
-**Do not disable either.**
+That was pinned by `tests/classifier-missing-keys.test.js` and
+`tests/classifier-feature-contract.test.js`, which guarded a file that no longer exists — both are
+now deleted too, explicitly, rather than left passing vacuously against nothing.
 
-**This does not block removing the gaze path wholesale.** `orchestrator.js` gates the classify loop
-on `!cfg.eyeTrackingEnabled || !host.getLastGazePoint()`. With no sensor there is no gaze point, the
-loop returns early, and `classifyGazeState` is never reached. The trap applies to deleting *feature
-keys while the classifier still runs* — a different and more dangerous operation.
+The reasoning that made wholesale removal safe, for the next time a generated-artifact classifier
+needs retiring: `orchestrator.js` gated the classify loop on
+`!cfg.eyeTrackingEnabled || !host.getLastGazePoint()`. With no sensor there was no gaze point, the
+loop returned early, and `classifyGazeState` was never reached even before deletion — so removing
+the whole pipeline in one PR, rather than trimming feature keys while a classifier kept running
+against them, could not trigger the undefined-comparison failure mode above. The trap applies to
+deleting *feature keys while the classifier still runs* — a different and more dangerous operation
+than the one actually performed here.
 
 ---
 
@@ -327,68 +545,137 @@ Verified by reading the tree. Line counts current as of this writing.
 ```
 .
 ├── LICENSE                    AGPL-3.0 — repo root only, see DEFECT
-├── build.mjs                  per-target package build; excludes server/
+├── build.mjs                  per-target package build
 ├── eslint.config.js           flat config, defect linter
 ├── manifests/
 │   ├── base.json              shared manifest — THE SOURCE OF TRUTH
 │   ├── chrome.json            service_worker
 │   └── firefox.json           background.scripts + gecko.id
-├── tests/                     16 files, 250 tests (Vitest) + browser smoke
+├── tests/                     Vitest suites (see Verification for current count) + browser smoke
+│   └── contract/              vendored, dependency-free snapshots of the server's pure
+│                               question/receipt logic — not shipped, tested here only
 ├── tools/question-quality.mjs question review harness
 ├── tldr classifier/           notebooks + synthetic CSVs — historical
 └── alcoia/
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
     ├── background.js          service worker
-    ├── server/                LEGACY — excluded from build, migration pending
     ├── src/content/
-    │   ├── content.js           1754 — host: modules, settings, fetch, highlight, word lookup,
+    │   ├── content.js           1471 — host: modules, settings, fetch, highlight, word lookup,
     │   │                               selection, keyboard, SPA nav, render callbacks
-    │   ├── ui-controller.js      466 — popups, highlight, toasts, dark mode. Owns openPopups
-    │   ├── reading-calibration.js 443 — WPM calibration (self-paced path is the live one)
-    │   ├── gaze-utils.js         414 — WebGazer smoothing/EMA        [removal candidate]
-    │   ├── state-engine.js       402 — signal fusion, one state estimate
-    │   ├── orchestrator.js       389 — detectors, engine, budget, the one subscriber
+    │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
+    │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
+    │   │                               gaze branch (see the migration note above)
+    │   ├── orchestrator.js       299 — detectors, engine, budget, the one subscriber; also drives
+    │   │                               coverage-gate.js and quiz-offer.js from the same paragraph
+    │   │                               signal (right at the ~300-line convention ceiling)
     │   ├── comprehension-monitor.js 300 — pace vs. difficulty vs. personal baseline
     │   ├── receipt.js            282 — reader-owned session record + preview
-    │   ├── classifier.js         274 — GENERATED decision tree       [removal candidate]
     │   ├── reading-map.js        255 — sidebar minimap
-    │   ├── focus-ruler.js        239 — reading band
-    │   ├── gaze-features.js      232 — feature extractor             [removal candidate]
-    │   ├── webgazer-bootstrap.js 202 — main-world injection          [removal candidate]
-    │   ├── question-card.js      150 — the retrieval question card
+    │   ├── focus-ruler.js        239 — reading band; already cursor/reading-line-first, gaze
+    │   │                               was only ever the highest-priority of three sources and
+    │   │                               is now simply never fed one
+    │   ├── reading-calibration.js 188 — WPM calibration, self-paced only (the gaze-training
+    │   │                               mode that used to pace the reader is gone)
+    │   ├── question-card.js      262 — the retrieval question card; commit-time confidence step,
+    │   │                               also the card's own snooze control (item 18) and, on the
+    │   │                               wrong-answer path only, keyword highlighting (item 19)
     │   ├── dyslexia-utils.js     136
-    │   ├── idle-overlay.js       133
     │   ├── overlay-utils.js      132
-    │   ├── pdf-handler.js        130 — partially wired, see defects
+    │   ├── pdf-handler.js        138 — extraction verified end to end (see Known defects); its own
+    │   │                               paragraph model is invisible to paragraph-tracker.js, so
+    │   │                               telemetry/coverage/questions never reach a PDF this way
     │   ├── tts-handler.js        126
-    │   ├── lang-detect.js        125
-    │   ├── intervention-policy.js 125 — the interruption budget, one place
+    │   ├── intervention-policy.js 267 — the interruption budget, one place: session cap scales
+    │   │                               with tracked paragraphs / measured reading time
+    │   │                               (baseAllowance + earned units, capped at absoluteCeiling
+    │   │                               ~25), dismissal-aware backoff on consecutive question-card
+    │   │                               dismissals, also exploration sampling (EXPLORATION_SAMPLE_RATE)
+    │   ├── coverage-gate.js       152 — the one "read enough to test" function; documentKey() is
+    │   │                               hostname+pathname only, deliberately not window.location.href
+    │   ├── quiz-offer.js           85 — when to show the unprompted end-of-reading card: near the
+    │   │                               bottom of the page, coverage-gate.js ready, not yet offered
+    │   │                               for this document. Reader-initiated once shown; never touches
+    │   │                               intervention-policy.js
+    │   ├── quiz-store.js          185 — the quiz record: IndexedDB behind an injectable backend,
+    │   │                               no passage text in the stored shape, deleteOne/deleteForDocument/
+    │   │                               deleteAll all actually remove rows
+    │   ├── calibration-copy.js     28 — the four-outcome confidence copy, shared by question-card.js
+    │   │                               and the quiz page so the wording cannot drift between them
+    │   ├── snooze.js               90 — explicit reader-chosen pause; SNOOZE_OPTIONS is canonical,
+    │   │                               resolved by content.js regardless of entry point; suppresses
+    │   │                               only the render step, never detection/coverage
+    │   ├── keyword-highlight.js    91 — 2-4 load-bearing terms, sage, on the wrong-answer
+    │   │                               explanation only; client-side heuristic (no server field
+    │   │                               exists for this); Latin-only regex self-selects out of
+    │   │                               CJK/Thai text rather than guessing at word boundaries
     │   ├── session-tracker.js     91
-    │   ├── pptx-handler.js        78 — partially wired, see defects
-    │   ├── sra-page-bridge.js     41 — postMessage bridge            [removal candidate]
+    │   ├── pptx-handler.js        85 — same verified shape and same gap as pdf-handler.js
     │   └── telemetry/
     │       ├── segmentation.js       225 — NOT a detector. Word/sentence counting, Intl.Segmenter
     │       ├── text-difficulty.js    185 — NOT a detector. FK + syntactic load
-    │       ├── response-signals.js   118 — TIER 1, not telemetry. Placement is historical
+    │       ├── response-signals.js   124 — TIER 1, not telemetry. Placement is historical
     │       ├── session-recall.js     117 — recall pool (in-memory)
-    │       ├── paragraph-tracker.js  158 — which paragraph is being read; figures/tables/pre are
-    │       │                             tracked landmarks with media: true, not measured as prose
+    │       ├── paragraph-tracker.js  162 — which paragraph is being read; figures/tables/pre are
+    │       │                             tracked landmarks with media: true, not measured as prose;
+    │       │                             count({ excludeMedia: true }) feeds coverage-gate.js
     │       ├── interaction-signals.js 100 — selection, copy, blur/return
-    │       ├── cursor-tracking.js     93 — pointer-Y. Its signal() output is DEAD, see defects
+    │       ├── cursor-tracking.js    101 — pointer-Y for paragraph-tracker's override; no
+    │       │                              signal()/corroborating-type surface (the dead one was
+    │       │                              deleted, not left unreachable — see Known defects)
     │       ├── scroll-regression.js   76 — paragraph-index returns
     │       ├── progression-entropy.js 76 — session shape
     │       ├── scroll-dynamics.js     59 — scroll jerk
     │       └── residual-distribution.js 53 — NOT a detector. Per-reader pace thresholds
-    ├── src/popup/             popup.js, notes.js, 6 HTML pages
+    ├── src/popup/             popup.js, notes.js, 8 HTML pages
+    │   ├── diagnostics.html/.js  version, masked token + delete, local settings, recent
+    │   │                          AI-call failures — safe to screenshot, no URLs/titles/
+    │   │                          passage text; opened from popup.html's Developer section
+    │   ├── diagnostics-format.js pure formatting helpers (maskToken, relativeTime,
+    │   │                          escapeHtml) split out so they are unit-testable alone
+    │   └── quiz.html/.js         the quiz page — reuses question-card.js's confidence-commit
+    │                              markup/CSS and calibration-copy.js; persists via quiz-store.js
+    ├── src/shared/
+    │   ├── config.js          the one place the backend origin is defined; classic script,
+    │   │                       loaded before content.js, background.js and popup.js
+    │   ├── install-token.js   the opaque per-install token; a real ES module, loaded only
+    │   │                       from content.js (loadModule) — see Access control above
+    │   └── diag-log.js        capped local log of silently-failed AI calls, feeding the
+    │                           diagnostics page; sanitises out any http(s) URL before
+    │                           storing, written to from content.js's callBackend()
     ├── src/styles/            fonts.css, overlay.css, panel.css, popup.css (legacy)
-    └── src/libs/              webgazer.min.js (GPLv3, 1.7 MB), pdfjs, jszip, fonts/ (OFL 1.1)
+    ├── src/libs/              pdfjs, jszip, fonts/ (OFL 1.1) — webgazer.min.js (GPLv3, 1.7 MB)
+    │                           is deleted; see the migration note above
+    ├── src/pdf-viewer/        viewer.html/.js — standalone local-file PDF viewer, reached only via
+    │                           background.js's file://*.pdf redirect; no content.js/orchestrator.js
+    │                           wired in (see Known defects: pdf-handler.js / pptx-handler.js)
+    └── src/pptx-viewer/       viewer.html/.js — same shape, same gap, for file://*.pptx
 ```
 
+✅ **The gaze path is deleted, not demoted.** Removed entirely, not just from the tree above:
+`src/libs/webgazer.min.js`, `src/content/classifier.js`, `src/content/gaze-features.js`,
+`src/content/gaze-utils.js`, `src/content/webgazer-bootstrap.js`, `src/content/sra-page-bridge.js`,
+`tests/classifier-missing-keys.test.js`, `tests/classifier-feature-contract.test.js`. Two modules
+were deleted too even though they were not on the removal item's original file list, because reading
+the actual code showed they existed solely to serve the gaze pipeline and had no other caller once
+it was gone: `src/content/idle-overlay.js` (its only trigger was raw gaze features from the classify
+loop) and `src/content/lang-detect.js` (its `detectScript()`/`watchScriptChanges()` output fed
+nothing except the gaze classifier's script-aware feature patch). `alcoia/demo.html`, a manual QA
+page whose every section existed to demonstrate a specific gaze-classifier trigger, is deleted for
+the same reason — keeping it would describe a feature that no longer exists, which CLAUDE.md's own
+opening line calls worse than no documentation at all. `ui-controller.js`'s
+`updateGazeOverPopups`/`isGazeOverAnyPopup` (a second, gaze-point-driven autohide-pause mechanism
+layered on top of the mouse-hover one) are deleted rather than left permanently unreachable; the
+mouse-hover pause (`_mouseOver`) still works exactly as before. The `scripting` permission is
+dropped from `manifests/base.json` — it existed only for the WebGazer main-world injection and one
+popup-side content-script reinjection button, both gone. Package size: **~4.7 MB → ~3.0 MB** per
+target, almost entirely the deleted 1.7 MB WebGazer bundle.
+
 **Detector count, precisely.** Eleven files in `telemetry/`, but only **eight** export a `create*`
-factory; of those, `response-signals.js` is tier 1 rather than telemetry and `cursor-tracking.js`'s
-signal is not consumed. So **six live telemetry detectors** feed the engine, plus
-`comprehension-monitor.js`, the primary sensor, which lives outside `telemetry/`. Do not describe
-this as "eleven detectors."
+factory; of those, `response-signals.js` is tier 1 rather than telemetry, and `cursor-tracking.js`
+has no `signal()`/corroborating-type surface at all — it exposes `getPointerY()`/`isTracking()`,
+consumed directly by `paragraph-tracker.js` as a reading-position override, never by the state
+engine. So **six live telemetry detectors** feed the engine, plus `comprehension-monitor.js`, the
+primary sensor, which lives outside `telemetry/`. Do not describe this as "eleven detectors."
 
 **A build step exists.** `build.mjs` copies the source tree verbatim per target — not a bundler,
 nothing transpiled — and writes a per-target `manifest.json` from `manifests/base.json` +
@@ -409,47 +696,140 @@ without a migration. `mode=tldr` in the summarise request is an API contract, no
 
 ### Dead code that reads as wired
 
-**`cursor_reading` is dead twice over.** `telemetry/cursor-tracking.js` emits it. `state-engine.js`
-lists it in `CORROBORATING_TYPES` — excluding it from asserting — but there is **no entry in
-`CORROBORATION`**, so the loop skips it unconditionally. And `orchestrator.js` never calls
-`cursorTracker.signal()`; it uses only `getPointerY()`. `tests/cursor-and-progression.test.js`
-passes against the detector in isolation and asserts nothing about the engine.
+- ✅ **Resolved: `cursor_reading`.** Used to be dead twice over — `telemetry/cursor-tracking.js`
+  emitted a `type: 'cursor_reading'` object via a `signal()` method; `state-engine.js` listed the
+  type in `CORROBORATING_TYPES` (excluding it from asserting) but had no matching `CORROBORATION`
+  entry, so the loop skipped it unconditionally; and `orchestrator.js` never called
+  `cursorTracker.signal()` in the first place, using only `getPointerY()`. Nothing had ever decided
+  what cursor tracking should corroborate in the engine, so inventing that policy retroactively
+  would have been guessing. The dead emission path — `signal()` and the `cursor_reading` object —
+  is deleted outright (see `cursor-tracking.js`'s header comment); the module's only surface now is
+  `update()` / `getPointerY()` / `isTracking()` / `reset()`, consumed by `paragraph-tracker.js` as a
+  reading-position override. `state-engine.js` carries no `cursor_reading` reference at all — grep
+  confirms it. `tests/cursor-and-progression.test.js` pins the current surface directly (no
+  `signal()` export to test against). If cursor evidence is wanted in the engine again later, that
+  is a `state-engine.js` decision — a bonus, an evidence sentence, the states it applies to — made
+  on purpose, the same way `selection`/`copy`/`scroll_jerk`/`progression` were, not a shape left
+  lying around from before.
 
 ### Configuration
 
-- **`localhost:3000` is hardcoded in four code sites**, not two: `content.js` (`BACKEND_DEFAULT`),
-  `background.js` (fallback URL), `popup.js` (`sra_backend_url` default — the one that reaches
-  storage), `popup.html` (placeholder). Plus `http://localhost/*` and `http://127.0.0.1/*` in
-  `host_permissions` in **`manifests/base.json`**.
-- **All four icon sizes point at one PNG.** `assets/alcoia-mark-lilac.png` serves 16/32/48/128 in
-  both `action.default_icon` and `icons`.
-- **The shipped package contains no LICENSE.** `build.mjs` copies from `alcoia/`; `LICENSE` sits at
-  the repo root. `dist/*/` ships 1.7 MB of GPLv3 WebGazer with no licence text. Resolves itself when
-  the gaze path goes; until then it is a defect. Font licences are fine.
+- ✅ **Fixed: `localhost:3000` no longer hardcoded anywhere.** All four sites — `content.js`
+  (`BACKEND_DEFAULT`), `background.js` (fallback URL), `popup.js` (`sra_backend_url` default —
+  the one that reaches storage), `popup.html` (placeholder, now set from JS instead of static
+  markup) — read `self.ALCOIA_CONFIG.SUMMARIZE_URL` from the one new file,
+  `alcoia/src/shared/config.js`, a plain classic script (not a module — none of the four contexts
+  that load it are modules) loaded before each site that reads it: in `manifests/base.json`'s
+  `content_scripts.js` before `content.js`; via `importScripts()` in `background.js` on Chrome and
+  via `manifests/firefox.json`'s `background.scripts` array on Firefox; and via a `<script>` tag in
+  `popup.html` before `popup.js`. `http://localhost/*` and `http://127.0.0.1/*` are gone from
+  `host_permissions` in `manifests/base.json` — `<all_urls>` already covered them, so nothing was
+  lost functionally, only the explicit dev-only declaration in the shipped manifest.
+  `config.js`'s `BACKEND_ORIGIN` is currently a placeholder on the reserved `.invalid` TLD — no
+  production origin has been assigned yet. **A developer pointing at a local backend still does
+  not edit source or the manifest**: the popup's Settings → Backend URL field
+  (`sra_backend_url` in storage) overrides the shipped default at runtime, exactly as before.
+- ⚠️ **Partially fixed: icon sizes are wired to three distinct files, but the pixel content is
+  still a placeholder.** `manifests/base.json`'s `action.default_icon` and `icons` used to point
+  16/32/48/128 all at `assets/alcoia-mark-lilac.png` — one image, rescaled by the browser at every
+  size, which turns to mush in the toolbar. They now point at three separate files —
+  `assets/icon-16.png`, `assets/icon-48.png` (also used for 32, the closer neighbour), and
+  `assets/icon-128.png` — so a real asset drop-in later needs no manifest change. **But the three
+  files are currently identical copies of the same source PNG**, not separately drawn art, because
+  no such art exists yet. This satisfies the letter of "wire the manifest for three distinct
+  files" while explicitly not claiming the underlying defect (one image asked to look right at
+  every size) is resolved. Ask the owner for real 16px/48px/128px art and replace the three files
+  directly — no code or manifest change needed when that happens.
+- ✅ **Fixed: the shipped package now contains a `LICENSE` file.** `build.mjs` copies the repo
+  root `LICENSE` into `dist/<target>/LICENSE` during `build()`, rather than into `alcoia/` itself
+  — one file to keep current instead of two that can drift. `tests/manifest.test.js` asserts it
+  exists and is non-empty for every target.
 
-### `gaze-features.js` — unfixable by tuning
+### `gaze-features.js` — deleted, kept here for the record
 
-- **`dist > 30`** as the fixation/saccade boundary against ~180 px of tracker error — entirely
-  inside the noise floor. `saccade_length`, `saccade_std`, `velocity_mean` and `regression_rate`
-  measure tracker jitter, not eye movement.
-- **`lineBand = Math.round(pt.y / 20)`** uses raw viewport `y` with no scroll offset. Scrolling
-  changes the band with zero eye movement.
-- **Fallback constants are all focused-looking.** When data is sparse the extractor fabricates
-  plausible focused-reading features instead of abstaining. Violates invariant 5.
-- **DBSCAN `eps: 80`** is below tracker error, so it clusters noise.
+This section used to document four measurement problems in the gaze feature extractor —
+`dist > 30` as a fixation boundary sitting inside the webcam tracker's own ~180px error, a
+scroll-blind line-band calculation, focused-looking fallback constants that violated invariant 5,
+and a DBSCAN epsilon below the noise floor. The file, and the classifier that consumed its output,
+are deleted rather than fixed — see the migration note under "Signal hierarchy" above. Kept as a
+record of why "tune the thresholds" was never going to be the right fix for that module, in case a
+future gaze-adjacent feature is proposed and the same reasoning applies.
 
-`gaze_drift_px`, `on_page_fraction` and `face_present` are the only honest outputs.
+### `pdf-handler.js` / `pptx-handler.js` — verified end to end; the primary intervention does not reach either
 
-### `pdf-handler.js` / `pptx-handler.js` — partially wired
+✅ **Verified, not assumed.** The `no-unused-vars` warnings this section used to describe
+(`backendUrl`/`fetchSummary`/`renderPopup`) are gone — both files' headers already record why
+(removed rather than wired up; see "Access control" above) — and `npm run lint`'s current 4
+warnings are none of them. What follows replaces the old "not verified end to end" note with what
+was actually checked in a real Chromium load.
 
-Both carry `no-unused-vars` warnings for `backendUrl`, `fetchSummary` and `renderPopup`, suggesting
-they accept dependencies they never use. Extraction, paragraph matching and the question path for
-PDF and PPTX have not been verified end to end. **Verify before building file import on top.**
+- **Manual extraction works.** A synthetic page shaped exactly like PDF.js's real `.textLayer`
+  output (absolutely positioned `<span>`s, zero `<p>`/`<li>`/`<blockquote>`) served at a URL ending
+  `.pdf` triggers `detectAndInitHandlers()` correctly; `pdf-handler.js`'s `indexTextLayers()` groups
+  the spans into paragraphs, and pressing **Alt+S** (the one manual trigger that routes through
+  `findParagraphAt()` → `pdfHandler.getParagraphText()`) produced a real summary popup with the
+  extracted text, fetched from the real mock backend. `pptx-handler.js`'s own overlay-box extraction
+  is architecturally identical (own paragraph model, own `findParagraphAt`) and was not re-verified
+  separately, since the code path it shares with `pdf-handler.js` (`content.js`'s
+  `triggerAIForParagraph`) is the part that was actually in question.
+- **Telemetry, detection, coverage and question generation never reach either format — verified,
+  not inferred.** The same fixture that proved extraction works also proved this: `document.
+  querySelectorAll('p, li, blockquote')` — `paragraph-tracker.js`'s *only* selector — returned
+  **zero** elements on it. `paragraph-tracker.js` is what feeds `comprehension-monitor.js` (pace vs.
+  difficulty), `coverage-gate.js` (the quiz gate), `quiz-offer.js`, and — via
+  `orchestrator.js`'s `syncParagraph()` — the state engine itself. `pdf-handler.js`/`pptx-handler.js`
+  build their own separate paragraph model (rects computed from `.textLayer` spans / `.sra-pptx-box`
+  overlay divs) that `paragraph-tracker.js` has no way to see. The practical consequence: **the
+  retrieval question — this product's stated primary intervention — cannot appear on a PDF or PPTX
+  document, ever, through any path.** `orchestrator.js`'s `stateEngine.subscribe` handler only ever
+  sets `target` from `currentParagraph.type === 'dom'` (`content.js`'s `onIntervention`, and the
+  `host.findParagraphAt` fallback inside `orchestrator.js` explicitly discards non-`'dom'` results
+  too), so even if a `struggling` state were somehow reached, there is no code path connecting it to
+  a PDF/PPTX paragraph. In practice the state engine mostly never fires at all on these documents,
+  because `pumpTelemetry()` only runs when a detector produces a signal, and the detectors that
+  matter here (`scrollRegression`, `progressionEntropy`, `comprehensionMonitor`'s speed mismatch)
+  are themselves fed exclusively from `paragraph-tracker.js` transitions. Only the interaction
+  detectors unrelated to paragraphs (`selection`, `copy`, `blur`/`focus`) can still fire, and those
+  alone cannot assert a state. This is not a bug in any one line — it is two independently-correct
+  subsystems (the telemetry pipeline, and the PDF/PPTX handlers) that were never connected, and
+  connecting them is a real design task (whose paragraph model wins, how dwell time attaches to a
+  PDF.js line-band that scrolls differently from a DOM paragraph, whether `coverage-gate.js`'s
+  60%-of-paragraphs math means anything against a page count) — **out of scope here**, the same
+  scale of work as file import itself, not a "clearly broken and small" fix.
+- **Fixed, because it was small and unambiguous: the standalone local-file viewer pages did not run
+  at all.** `background.js` redirects a `file://*.pdf`/`file://*.pptx` navigation to alcoia's own
+  `src/pdf-viewer/viewer.html` / `src/pptx-viewer/viewer.html`. Both pages kept their entire
+  rendering logic in an inline `<script>` block, which MV3's default extension-page CSP
+  (`script-src 'self'`, no override declared in `manifests/base.json`) blocks outright — confirmed
+  in a real Chromium load: the console showed the CSP refusal, `window.pdfjsLib`/`JSZip` never
+  loaded, and the page sat frozen on "Loading PDF…"/"Loading presentation…" forever, **with zero
+  thrown page errors** — another instance of this codebase's own documented failure mode, "absence,
+  not error." Fixed by moving each inline script verbatim into an external `viewer.js` next to its
+  `viewer.html` (`<script src="viewer.js">` — CSP-compliant, MV3 doesn't need a manifest change for
+  a same-origin external script referenced from the extension's own page) — no logic changed, only
+  where it lives. Re-verified in a real Chromium load with a genuine minimal PDF and a genuine
+  minimal PPTX served over HTTP: both viewers now render fully (canvas + extracted text layer for
+  the PDF; parsed title/body for the PPTX slide), zero CSP errors, zero page errors. **These two
+  pages still have no alcoia detection/intervention wired into them at all** — no `content.js`, no
+  `orchestrator.js`, nothing beyond the bare viewer chrome — which is the same gap as the bullet
+  above, one level further out; fixing *that* is, again, out of scope for a verify-and-report item.
+- **Two stale references to the deleted gaze pipeline, fixed in passing** since they were touched by
+  this verification: `pdf-viewer/viewer.html`'s `.textLayer` comment ("for selection + gaze
+  hit-testing") and `pptx-handler.js`'s header ("so gaze mapping can work") — both described a
+  feature that no longer exists (see "Signal hierarchy" above). Reworded to describe what the text
+  layer / overlay boxes are actually for now: selection, and `findParagraphAt()` hit-testing.
+
+**Still true, and still worth building instead of deferring:** whichever design resolves the
+paragraph-model mismatch above should also decide how `coverage-gate.js`'s "read enough to test"
+math applies to a document with pages instead of continuous scroll — that question was open before
+this verification and remains open after it.
 
 ### Convention drift
 
-`content.js` is **1754 lines** and growing (was ~1435 at the last refactor). Six files exceed the
-~300-line convention. Settings live in `content.js` as loose `let`s read through accessors
+`content.js` is **1616 lines** — down from 1754 after the gaze-path removal deleted roughly 280
+lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
+Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437); it was six
+before that removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
 
@@ -457,7 +837,12 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-250 tests pass. `npm run lint` exits 0 with 15 warnings (all `no-unused-vars` in untouched files).
+431 tests pass, in 25 files (two classifier-guard files were deleted alongside the classifier they
+guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
+failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js and
+keyword-highlight.test.js are new). `npm run lint` exits 0 with 4 warnings
+(all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
+`npm test` and `npm run lint` rather than trusting this line.
 
 **The suite's failure mode is absence, not error.** Four instances so far:
 
@@ -469,34 +854,77 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 3. Every word count was `text.split(/\s+/)`, so a 600-character Chinese paragraph counted as **one
    word** and fell under every threshold. The extension loaded, ran and did nothing on a large
    fraction of the web. Nothing threw. Every test passed.
-4. `cursor_reading` — currently live in the tree.
+4. ✅ **Resolved:** `cursor_reading` — the dead emission path is now deleted rather than live in
+   the tree; see "Dead code that reads as wired" above.
 
 **Still open:**
 
-- **`comprehension-monitor.js` has no unit test file.** The primary sensor is untested — the
-  running-median WPM baseline, its `chrome.storage` persistence, the speed-mismatch thresholds, and
-  **the reader-to-self comparison that stops the system quizzing a slow reader for reading slowly.**
-  That is the fairness safeguard, covered only incidentally.
+- ✅ **Fixed: `comprehension-monitor.js` now has a unit test file**, `tests/comprehension-monitor.test.js`
+  (16 tests, `@vitest-environment jsdom`, `vi`'s fake timers throughout since the module reads
+  `Date.now()` directly). Covers the running-median WPM baseline (seeding, updating, persistence
+  round-trip through the legacy key and the per-language map, and resistance to a single outlier
+  sample), expected reading time scaling with word count and with difficulty grade, speed-mismatch
+  in both directions, `MIN_WORD_COUNT` gating, and **the reader-to-self fairness safeguard directly**
+  — the test that establishes a personal slow-but-steady pace and then confirms the safeguard stops
+  flagging it while still catching a genuine outlier is the single most important one in the file.
+  While adding this coverage, found and documented (not fixed, per this item's own instructions) a
+  real invariant-5 concern: when `text-difficulty.js` cannot measure sentence structure at all (a
+  script with no terminal punctuation, `structureIsUnreadable()`), it returns `score: 60, grade:
+  'standard'` — a plausible default standing in for missing data — rather than a signal the caller
+  can recognise as "no measurement available." `comprehension-monitor.js` never checks the `basis`
+  field that would let it tell the difference, so it treats that default exactly like a real
+  'standard' paragraph for both baseline calibration and speed-mismatch comparisons. Pinned by the
+  "difficulty basis: structure unavailable" test. **Not fixed here — worth its own item**, and
+  whichever of `text-difficulty.js` or `comprehension-monitor.js` ends up owning the abstention is
+  an open design question, not obviously the former.
 - **No end-to-end reading session** with clock advancement across minutes.
-- **The camera-on path is not a distinct case** in any test.
 - **Question quality is untested.** `npm run questions:review` mechanises what can be mechanised —
   span really in the passage, question/span lexical overlap, giveaway distractors, conspicuous
   option lengths — and **flags rather than scores.** Judging whether a question tests understanding
   is a human job. Do twenty varied pages before shipping.
-- **No test asserts a failure path reaches `unknown`.** Invariant 9 is stated but unguarded.
+- ✅ **Fixed: invariant 9 is now guarded**, and one real violation of it was found and fixed while
+  adding coverage. `tests/failure-paths.test.js` covers what is unit-testable directly
+  (state-engine.js resolving unrecognised/absent/null telemetry to `unknown`; a denied or
+  never-recorded decision never spending the interruption budget; question-card.js rejecting
+  malformed question shapes). `tests/browser/smoke.mjs` gained a `FAIL=questions` mode that makes
+  the mock server return a 422 for every question request, then asserts the endpoint was actually
+  called, no card ever reached the screen, and the drop is visible in the debug log as
+  `Interruption dropped before render (...) — budget not spent` — the only way to exercise
+  content.js's own failure paths, since it is a single non-modular IIFE with nothing exported for
+  a unit test to import. **The violation:** `handleAsk()` in content.js used to fall back to a
+  full comprehension-offer popup (or, via a since-removed dead branch, a summary) whenever question
+  generation failed for any reason — network error, 422, malformed response, or a legitimately
+  empty result — which meant a failed *question* call quietly became a shown *explanation*, on a
+  product whose stated design is that asking beats summarising. Fixed: `handleAsk()` now returns
+  `false` (nothing shown, no budget spent) on any empty result, and the now-fully-dead
+  `handleComprehensionSignal()` / `buildComprehensionOfferHtml()` — reachable only from that
+  removed fallback and from an `onIntervention` branch that `STATE_ACTIONS` can never actually
+  produce — are deleted rather than left as a second `cursor_reading`. Separately,
+  `question-card.js`'s `show()` used to crash on a question missing both `span` and `q` (`.slice()`
+  on `undefined`) and would otherwise render literally the text "undefined" for other missing
+  fields; it now validates the full shape (`q`, all four `options`, `answerIndex`) and degrades to
+  `false` instead. `triggerAIForParagraph()`'s PDF/PPTX text extraction is now wrapped in
+  try/catch, falling through to the existing empty-text return, rather than an uncaught rejection.
+  **Not addressed here:** install-token failure (no token mechanism exists yet — item 9) and
+  storage read failure (already handled by `chrome.storage.local.get`'s own default-merging
+  contract, not by code in this repo). See `tests/failure-paths.test.js`'s header for the full
+  breakdown of what is covered where and why.
 
 ---
 
 ## Decisions already made — do not re-litigate
 
-- **Camera off by default.** `sra_eye` defaults to `false` in `content.js`, `popup.js` and the
-  service worker guard. Reading modes must never set it.
-- **Telemetry is the primary path.**
+- ✅ **Camera removed, not just off by default.** There was no camera path as of the gaze-removal
+  item — no `sra_eye` key, no permission, no sensor, nothing for a reading mode to accidentally
+  turn on. If a future task proposes adding one back, that is a new invariant-1 decision, not a
+  restoration, and needs the same scrutiny a first-time camera feature would get.
+- **Telemetry is the only detection path.**
 - **Questions, not summaries, are the primary intervention.** Summarising performs the operation
   that produces the learning. Follows D'Mello et al. (2016), d = 0.47.
 - **State names describe observations:** `on_pace`, `skimming`, `struggling`, `drifting`, `absent`,
-  `unknown`. Do not reintroduce `confused` or `overloaded`. (`classifier.js` still emits them
-  because it is generated; `content.js` translates in one place.)
+  `unknown`. Do not reintroduce `confused` or `overloaded` — those were the deleted gaze
+  classifier's vocabulary, translated at the boundary while it still ran. There is no longer a
+  boundary to translate at.
 - **Statefulness is level B.** Access is via issued install token. Fingerprinting refused.
 - **Aggregate class analytics are anonymous and cohort-level only.** Not per student. Individual
   verification is the weaker and riskier pitch, and universities are moving away from
@@ -616,8 +1044,8 @@ node build.mjs                  # both targets
 Then load unpacked and confirm manually:
 
 - Loads with no console errors on a plain article page
-- Reading detection runs with the camera **off**
-- No `getUserMedia` call unless the reader explicitly enabled the camera
+- Reading detection runs on telemetry alone — there is no camera path to be off
+- No `getUserMedia` call, ever — there is no code path left that would make one
 - No network request contains image or video data
 - Third-party requests remain at zero
 
