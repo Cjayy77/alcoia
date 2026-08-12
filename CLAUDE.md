@@ -391,6 +391,8 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── scroll-dynamics.js     59 — scroll jerk
     │       └── residual-distribution.js 53 — NOT a detector. Per-reader pace thresholds
     ├── src/popup/             popup.js, notes.js, 6 HTML pages
+    ├── src/shared/config.js   the one place the backend origin is defined; classic script,
+    │                           loaded before content.js, background.js and popup.js
     ├── src/styles/            fonts.css, overlay.css, panel.css, popup.css (legacy)
     └── src/libs/              webgazer.min.js (GPLv3, 1.7 MB), pdfjs, jszip, fonts/ (OFL 1.1)
 ```
@@ -428,10 +430,21 @@ passes against the detector in isolation and asserts nothing about the engine.
 
 ### Configuration
 
-- **`localhost:3000` is hardcoded in four code sites**, not two: `content.js` (`BACKEND_DEFAULT`),
-  `background.js` (fallback URL), `popup.js` (`sra_backend_url` default — the one that reaches
-  storage), `popup.html` (placeholder). Plus `http://localhost/*` and `http://127.0.0.1/*` in
-  `host_permissions` in **`manifests/base.json`**.
+- ✅ **Fixed: `localhost:3000` no longer hardcoded anywhere.** All four sites — `content.js`
+  (`BACKEND_DEFAULT`), `background.js` (fallback URL), `popup.js` (`sra_backend_url` default —
+  the one that reaches storage), `popup.html` (placeholder, now set from JS instead of static
+  markup) — read `self.ALCOIA_CONFIG.SUMMARIZE_URL` from the one new file,
+  `alcoia/src/shared/config.js`, a plain classic script (not a module — none of the four contexts
+  that load it are modules) loaded before each site that reads it: in `manifests/base.json`'s
+  `content_scripts.js` before `content.js`; via `importScripts()` in `background.js` on Chrome and
+  via `manifests/firefox.json`'s `background.scripts` array on Firefox; and via a `<script>` tag in
+  `popup.html` before `popup.js`. `http://localhost/*` and `http://127.0.0.1/*` are gone from
+  `host_permissions` in `manifests/base.json` — `<all_urls>` already covered them, so nothing was
+  lost functionally, only the explicit dev-only declaration in the shipped manifest.
+  `config.js`'s `BACKEND_ORIGIN` is currently a placeholder on the reserved `.invalid` TLD — no
+  production origin has been assigned yet. **A developer pointing at a local backend still does
+  not edit source or the manifest**: the popup's Settings → Backend URL field
+  (`sra_backend_url` in storage) overrides the shipped default at runtime, exactly as before.
 - **All four icon sizes point at one PNG.** `assets/alcoia-mark-lilac.png` serves 16/32/48/128 in
   both `action.default_icon` and `icons`.
 - **The shipped package contains no LICENSE.** `build.mjs` copies from `alcoia/`; `LICENSE` sits at
