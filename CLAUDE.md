@@ -521,10 +521,10 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-245 tests pass, in 15 files (two classifier-guard files were deleted alongside the classifier they
-guarded — see the gaze-path migration note). `npm run lint` exits 0 with 5 warnings (all
-`no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
-`npm test` and `npm run lint` rather than trusting this line.
+252 tests pass, in 15 files (two classifier-guard files were deleted alongside the classifier they
+guarded — see the gaze-path migration note — and comprehension-monitor.test.js is new). `npm run
+lint` exits 0 with 5 warnings (all `no-unused-vars` in untouched files). These numbers drift with
+every PR; re-check with `npm test` and `npm run lint` rather than trusting this line.
 
 **The suite's failure mode is absence, not error.** Four instances so far:
 
@@ -540,10 +540,24 @@ guarded — see the gaze-path migration note). `npm run lint` exits 0 with 5 war
 
 **Still open:**
 
-- **`comprehension-monitor.js` has no unit test file.** The primary sensor is untested — the
-  running-median WPM baseline, its `chrome.storage` persistence, the speed-mismatch thresholds, and
-  **the reader-to-self comparison that stops the system quizzing a slow reader for reading slowly.**
-  That is the fairness safeguard, covered only incidentally.
+- ✅ **Fixed: `comprehension-monitor.js` now has a unit test file**, `tests/comprehension-monitor.test.js`
+  (16 tests, `@vitest-environment jsdom`, `vi`'s fake timers throughout since the module reads
+  `Date.now()` directly). Covers the running-median WPM baseline (seeding, updating, persistence
+  round-trip through the legacy key and the per-language map, and resistance to a single outlier
+  sample), expected reading time scaling with word count and with difficulty grade, speed-mismatch
+  in both directions, `MIN_WORD_COUNT` gating, and **the reader-to-self fairness safeguard directly**
+  — the test that establishes a personal slow-but-steady pace and then confirms the safeguard stops
+  flagging it while still catching a genuine outlier is the single most important one in the file.
+  While adding this coverage, found and documented (not fixed, per this item's own instructions) a
+  real invariant-5 concern: when `text-difficulty.js` cannot measure sentence structure at all (a
+  script with no terminal punctuation, `structureIsUnreadable()`), it returns `score: 60, grade:
+  'standard'` — a plausible default standing in for missing data — rather than a signal the caller
+  can recognise as "no measurement available." `comprehension-monitor.js` never checks the `basis`
+  field that would let it tell the difference, so it treats that default exactly like a real
+  'standard' paragraph for both baseline calibration and speed-mismatch comparisons. Pinned by the
+  "difficulty basis: structure unavailable" test. **Not fixed here — worth its own item**, and
+  whichever of `text-difficulty.js` or `comprehension-monitor.js` ends up owning the abstention is
+  an open design question, not obviously the former.
 - **No end-to-end reading session** with clock advancement across minutes.
 - **Question quality is untested.** `npm run questions:review` mechanises what can be mechanised —
   span really in the passage, question/span lexical overlap, giveaway distractors, conspicuous
