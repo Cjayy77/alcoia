@@ -189,6 +189,18 @@ extension.
 nag. The ceiling bounds automated abuse; it does not meter readers. The **diagnostics page** is the
 one place the number is visible, for support.
 
+✅ **Diagnostics page implemented** — `alcoia/src/popup/diagnostics.html`/`.js`, opened from
+popup.html's Developer section. Shows extension version, install-token status (masked to its last
+4 characters — this page is required to be safe to screenshot, and the full token is a bearer
+credential even though it identifies an install rather than a person) with a "Delete token" control,
+every local `sra_*` setting, and a capped local log of AI calls that failed silently (invariant 9
+means the reader never sees an error otherwise) via the new `diag-log.js`. **Plan and assist count
+are not shown** — there is no account/entitlements endpoint anywhere in this repository or the
+information to invent its shape, and building one is server work, out of scope here (see Scope).
+The page states this plainly rather than fabricating a number; wiring it up is a follow-on item once
+that endpoint exists. Nothing on the page reads the current tab, so it cannot leak a page's URL,
+title or passage text by construction.
+
 **Metering:** a generated quiz costs **one assist** and must therefore be **one server call** — one
 passage batch in, N questions out. Not one call per question.
 
@@ -434,12 +446,20 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── progression-entropy.js 76 — session shape
     │       ├── scroll-dynamics.js     59 — scroll jerk
     │       └── residual-distribution.js 53 — NOT a detector. Per-reader pace thresholds
-    ├── src/popup/             popup.js, notes.js, 6 HTML pages
+    ├── src/popup/             popup.js, notes.js, 7 HTML pages
+    │   ├── diagnostics.html/.js  version, masked token + delete, local settings, recent
+    │   │                          AI-call failures — safe to screenshot, no URLs/titles/
+    │   │                          passage text; opened from popup.html's Developer section
+    │   └── diagnostics-format.js pure formatting helpers (maskToken, relativeTime,
+    │                              escapeHtml) split out so they are unit-testable alone
     ├── src/shared/
     │   ├── config.js          the one place the backend origin is defined; classic script,
     │   │                       loaded before content.js, background.js and popup.js
-    │   └── install-token.js   the opaque per-install token; a real ES module, loaded only
-    │                           from content.js (loadModule) — see Access control above
+    │   ├── install-token.js   the opaque per-install token; a real ES module, loaded only
+    │   │                       from content.js (loadModule) — see Access control above
+    │   └── diag-log.js        capped local log of silently-failed AI calls, feeding the
+    │                           diagnostics page; sanitises out any http(s) URL before
+    │                           storing, written to from content.js's callBackend()
     ├── src/styles/            fonts.css, overlay.css, panel.css, popup.css (legacy)
     └── src/libs/              pdfjs, jszip, fonts/ (OFL 1.1) — webgazer.min.js (GPLv3, 1.7 MB)
                                 is deleted; see the migration note above
@@ -568,7 +588,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-322 tests pass, in 18 files (two classifier-guard files were deleted alongside the classifier they
+343 tests pass, in 20 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js and install-token.test.js are new). `npm run lint` exits 0 with 5 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
