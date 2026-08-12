@@ -62,18 +62,27 @@ question card, quiz, receipt, popup and extension pages, styles, build.
 
 | Thing | Where | Note |
 |---|---|---|
-| API server | Separate private repo | See migration status below |
+| API server | Separate private repo | Fully moved as of this migration item — see status below |
 | Accounts, entitlements, install tokens, assist counter | Server | Client displays; server decides |
 | Question generation and validation | Server | The client consumes questions; it never authors them |
 | Aggregate class analytics | Server | Cohorts cannot be aggregated on one client |
 | Educator / team portals | Separate web app | The extension never sees the admin console |
 | Pricing, tiers, legal text | Human decision | Scaffold only, escalate |
 
-⚠️ **Migration in progress.** `alcoia/server/` still exists in this tree and is **legacy**. It is
-excluded from the shipped package by `build.mjs`, and `tests/questions.test.js` (31 tests) and
-`tests/receipt.test.js` (24 tests) import from it. Removing it is a sequenced task; until it lands,
-treat `alcoia/server/` as **read-only reference**. Do not extend it. If a task requires a server
-change, say so and stop.
+✅ **Migration complete.** `alcoia/server/` has been deleted from this repository (owner confirmed
+it is already preserved in the separate private server repo before deletion). The API server is no
+longer read-only reference here — it is simply not here. `tests/questions.test.js` (31 tests) and
+`tests/receipt.test.js` (24 tests) now import from `tests/contract/questions.js` and
+`tests/contract/receipt-signing.js` — vendored, dependency-free snapshots of the server's pure
+question-validation and receipt-signing logic, kept only so the client's assumptions about the
+server's contract (the verbatim-span requirement; the receipt canonicalisation format) stay under
+test in this repo. They are not shipped, are not covered by this repo's AGPL grant, and must never
+be imported from shipped code — the client still never authors questions. `build.mjs`'s `EXCLUDE`
+set no longer has a `server` entry, since there is nothing under `alcoia/` left to match. Any task
+that requires a change to server logic is out of scope here; say so and stop.
+
+Deleting the directory from the working tree does not remove it from git history. A history
+rewrite or a fresh repository would be required if that ever matters — not attempted here.
 
 ---
 
@@ -327,19 +336,20 @@ Verified by reading the tree. Line counts current as of this writing.
 ```
 .
 ├── LICENSE                    AGPL-3.0 — repo root only, see DEFECT
-├── build.mjs                  per-target package build; excludes server/
+├── build.mjs                  per-target package build
 ├── eslint.config.js           flat config, defect linter
 ├── manifests/
 │   ├── base.json              shared manifest — THE SOURCE OF TRUTH
 │   ├── chrome.json            service_worker
 │   └── firefox.json           background.scripts + gecko.id
-├── tests/                     16 files, 250 tests (Vitest) + browser smoke
+├── tests/                     Vitest suites (see Verification for current count) + browser smoke
+│   └── contract/              vendored, dependency-free snapshots of the server's pure
+│                               question/receipt logic — not shipped, tested here only
 ├── tools/question-quality.mjs question review harness
 ├── tldr classifier/           notebooks + synthetic CSVs — historical
 └── alcoia/
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
     ├── background.js          service worker
-    ├── server/                LEGACY — excluded from build, migration pending
     ├── src/content/
     │   ├── content.js           1754 — host: modules, settings, fetch, highlight, word lookup,
     │   │                               selection, keyboard, SPA nav, render callbacks
@@ -362,14 +372,15 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── pdf-handler.js        130 — partially wired, see defects
     │   ├── tts-handler.js        126
     │   ├── lang-detect.js        125
-    │   ├── intervention-policy.js 125 — the interruption budget, one place
+    │   ├── intervention-policy.js 159 — the interruption budget, one place; also exploration
+    │   │                               sampling (EXPLORATION_SAMPLE_RATE)
     │   ├── session-tracker.js     91
     │   ├── pptx-handler.js        78 — partially wired, see defects
     │   ├── sra-page-bridge.js     41 — postMessage bridge            [removal candidate]
     │   └── telemetry/
     │       ├── segmentation.js       225 — NOT a detector. Word/sentence counting, Intl.Segmenter
     │       ├── text-difficulty.js    185 — NOT a detector. FK + syntactic load
-    │       ├── response-signals.js   118 — TIER 1, not telemetry. Placement is historical
+    │       ├── response-signals.js   124 — TIER 1, not telemetry. Placement is historical
     │       ├── session-recall.js     117 — recall pool (in-memory)
     │       ├── paragraph-tracker.js  158 — which paragraph is being read; figures/tables/pre are
     │       │                             tracked landmarks with media: true, not measured as prose
