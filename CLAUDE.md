@@ -440,8 +440,175 @@ in-product note on the quiz page itself.
 - **No retake.** This is why passage text is **not** stored — only questions, the reader's answers
   and confidence ratings, and verdicts. Review works; regeneration does not.
 - **Deletable**, per document and all at once, and deletion must actually delete.
-- **This is the first feature that writes reading content to disk.** Privacy copy must be updated in
-  the same change, not later.
+- **This writes reading content to disk** and privacy copy must reflect that. ⚠️ It is not the
+  *first* feature to do so, though earlier drafts of this file and both READMEs said it was:
+  colour highlights (`sra_text_highlights`, Ctrl+drag) already did, and predate every item in this
+  file's sequence — see "Persistent colour highlights" below, where item 25 found and corrected the
+  claim everywhere it appeared.
+
+---
+
+## Persistent colour highlights — pre-existing, verified and hardened (item 25)
+
+✅ **This feature already existed and already worked before item 25 started.** The brief that
+launched item 25 described it as unbuilt ("Ctrl+drag highlights do not survive a page reload...
+nothing is written to storage") — that description was wrong for the code as it stood, not
+aspirational. `applyTextHighlight()`, `restoreTextHighlights()` and `restoreSingleHighlight()` were
+already persisting to `sra_text_highlights` and already re-anchoring on load via a W3C
+TextQuoteSelector-shaped prefix/suffix context match, dated to a commit that predates item 3 — i.e.
+before this file's own sequenced-item history begins. **Verified in a real Chromium load before
+changing anything**, using a synthetic Ctrl+drag-shaped gesture (a real `MouseEvent('mouseup',
+{ctrlKey:true})` dispatched on the element under the selection — dispatching on `document` instead
+does not work, `window.getSelection()` reads empty by the time the handler runs) and a color-picker
+swatch click: highlight → reload → still there, confirmed round-trip, before any code in this item
+was touched. This is exactly the kind of brief-vs-code conflict CLAUDE.md exists to catch — flagged
+here, not silently built over.
+
+**What item 25 actually did, given the above:** audit the existing mechanism against the brief's
+specific requirements, harden the real gaps found, and fix the resulting documentation error
+(the "first feature" claim above and in both READMEs).
+
+- ✅ **Global (cross-document) storage cap added.** `sra_text_highlights` had a per-document cap
+  (100 entries, unnamed magic number) but nothing bounding the number of *documents* — a reader who
+  highlighted on hundreds of pages would grow the store without limit. `MAX_HIGHLIGHT_DOCS = 150`
+  now matches `coverage-gate.js`'s `MAX_DOCS` and the existing `sra_last_visit` cap — the same shape
+  used everywhere else in this codebase that keys data per document. Least-recently-touched document
+  is evicted, derived from the newest `timestamp` among that document's own highlight entries (the
+  stored shape has no separate per-document metadata to hold one directly, and changing the shape to
+  add one would mean migrating every existing reader's stored highlights and every other reader of
+  the shape — `highlights.js`, `export.js` — for a cap that does not need it). Verified with a real
+  Chromium load: a store seeded with 150 documents plus one at the per-document cap, followed by one
+  real Ctrl+drag highlight, ends at exactly 150 documents with the genuinely-oldest one evicted —
+  confirmed by asserting the specific document is gone, not just that the count dropped, and
+  confirmed the negative case too (reverting the cap logic leaves the store at 151 and the oldest
+  document still present).
+- ✅ **Position added as a secondary anchor signal, per the item's explicit "Do."** A `paragraphIndex`
+  (the highlighted text's containing block's index among `p, li, blockquote` — the same selector
+  `paragraph-tracker.js` scans) is now captured at creation and used at restore time, but strictly as
+  a tie-breaker: `restoreSingleHighlight()` now collects **every** occurrence of the highlighted text
+  on the page (the old version stopped at the first), scores each by whether the stored prefix/suffix
+  context matches around it, and only consults `paragraphIndex` to choose between candidates that
+  already passed the context check. A candidate with no context confirmation is never selected by
+  position alone, even if it is the only "close" one — multiple identical-text matches with no
+  context confirmation anywhere is treated as genuinely ambiguous and the entry is left unrestored
+  this visit, per the item's explicit "do not re-anchor by position alone."
+- ✅ **`ctxAfter` was captured at creation and silently never read at restoration.** Only `ctxBefore`
+  was checked, with a loose fuzzy comparison. Restoration now checks both, tightened alongside the
+  position-scoring work above.
+- ✅ **SPA navigation now re-triggers restoration** — it previously only ran once, at initial page
+  load, so a client-rendered route change never brought back highlights for the new route without a
+  full reload. `onSpaNavigate()` now calls `restoreTextHighlights()` (debounced 300ms to let the SPA
+  framework actually render the new route's content first; `restoreSingleHighlight()`'s existing
+  fail-silent behaviour means a still-mid-transition DOM just yields no match rather than a wrong
+  one). **Found in the process, not fixed here — a real, pre-existing, separate defect:**
+  `onSpaNavigate()` is wired to both `popstate` and a monkey-patch of `history.pushState`/
+  `replaceState`, but the patch is applied in the content script's isolated world, which does not
+  propagate to the page's own main-world `history` object — confirmed directly, not assumed, by
+  reading `history.pushState.toString()` from a `page.evaluate()` call (main-world code, the same
+  world a real SPA framework's own routing runs in) immediately after the patch executes: still
+  `function pushState() { [native code] }`. A real single-page app's own route changes, which almost
+  always call `pushState` rather than triggering `popstate` directly, **never actually reach
+  `onSpaNavigate()` at all** — only genuine `popstate` events (browser back/forward) do, since that is
+  a real DOM event delivered to both worlds. This item's own SPA-navigation test in
+  `tests/browser/smoke.mjs` exercises `popstate` (`history.back()`) specifically, not `pushState`,
+  because a `pushState`-based version would have silently proven nothing. Fixing the underlying gap
+  would mean a MAIN-world bridge — the exact shape of thing the gaze-removal item deleted
+  (`sra-page-bridge.js`, `webgazer-bootstrap.js`) — and deserves the same deliberate reconsideration
+  a new MAIN-world injection always gets, not a quick patch bundled into an unrelated item.
+- ✅ **Per-document deletion added to `highlights.js`.** The page already had per-highlight delete
+  and delete-all; per-document ("delete every highlight on this one page") was missing. Added as a
+  "Delete all on this page" action on every card for that document — the list is not grouped by
+  document, so this was the smallest addition rather than restructuring the page into groups.
+- ✅ **`documentKey()` (`coverage-gate.js`) and `applyTextHighlight()`'s `urlKey` normalise
+  identically** — both are `hostname + pathname`, no separator, no query string, no hash. Checked
+  directly, per the item's own instruction to report rather than assume; no reconciliation needed.
+- ✅ **Already correct, verified rather than assumed:** anchoring failure leaves the entry in
+  storage rather than deleting it (a later visit might succeed), confirmed with a highlight whose
+  text does not exist anywhere on the page — zero marks rendered, zero page errors, entry still
+  present in storage afterward. Deletion (double-click) already removed both the DOM mark and the
+  storage entry, and both stayed gone after a further reload.
+- **No accuracy or retention claim introduced anywhere.** Highlighting on its own has weak evidence
+  as a study technique — it is shipped purely as a reader-controlled tool, described mechanically,
+  with no language anywhere implying it aids comprehension or retention.
+- **Local only, level B**, unchanged — nothing about this item transmits highlight content anywhere.
+
+Verified with `tests/browser/smoke.mjs`'s new "colour highlights (item 25)" block: real-UI round
+trip (creation via the simulated Ctrl+drag gesture through to survives-a-reload), deletion removing
+both the DOM node and the storage entry and staying gone after another reload, anchoring surviving
+three paragraphs of unrelated content inserted before the highlighted text (same document key,
+different absolute position entirely), anchoring failing silently when the text is genuinely gone,
+restoration after a `popstate`-driven SPA navigation, and both storage caps holding under a seeded
+worst case — including confirming the *specific* document evicted is the genuinely oldest one, not
+just that the count dropped. Every new assertion in this block was verified against the actual
+regression it guards: the global-cap and position-hint logic were each independently reverted and
+confirmed to fail the corresponding check before being restored.
+
+---
+
+## Two highlight toggles — decided, implemented (item 26)
+
+✅ **Implemented.** Item 25's colour highlight always did exactly one thing — mark the passage in
+colour, locally, for free. Item 26 splits "what Ctrl+drag does" into **two independent controls**,
+not one four-way mode dropdown: **colour** (free, client-only, on by default) and **summarise**
+(the AI-calling half, off by default). A reader can want the colour mark without spending an assist
+on every one of them, or want the AI explanation without a permanent coloured mark cluttering the
+page.
+
+- **Two `let`s in `content.js`, read live at the point of action** — `highlightColorEnabled` /
+  `highlightSummarizeEnabled` — the same pattern every other setting in this file already uses
+  (`assistantEnabled`, `selectionEnabled`, etc.), so a popup change takes effect on the very next
+  Ctrl+drag with no page reload. Backed by `sra_highlight_color` (default `true`) and
+  `sra_highlight_summarize` (default `false`) in `chrome.storage.local`, wired into both the
+  boot-time defaults/callback and the live `msg.type === 'settings'` handler.
+- **Popup gains two new toggle cells**, in the same "How it helps" section as the existing
+  highlight toggle, each with its own cost-legible description ("Costs nothing — stays on your
+  device" vs. "uses one assist each time") — the two-toggle shape was chosen specifically so the
+  assist-cost model stays legible per control, rather than bundled into one selector where a reader
+  can't tell which combination spends a call.
+- **Four real combinations, not a synthetic matrix** — verified against the actual Ctrl+drag
+  handler and `applyTextHighlight()`, not asserted from the outside:
+  - **colour ON, summarise OFF (default)** — unchanged from item 25: colour picker, a mark, no
+    server call.
+  - **colour ON, summarise ON** — the picker still appears (colour is chosen first); once a swatch
+    is picked, `applyTextHighlight()` itself checks `highlightSummarizeEnabled` and, if set, fetches
+    a summary and renders it as a popup **after** the mark already exists — a failed fetch degrades
+    to silence (invariant 9) without undoing the mark that already landed.
+  - **colour OFF, summarise ON** — resolved via `AskUserQuestion` rather than left ambiguous: this
+    is the rejected four-way dropdown's "summary only" mode, ported into the two-toggle design.
+    Ctrl+drag summarises the selection **directly**, with no colour picker and no mark at all.
+  - **colour OFF, summarise OFF** — Ctrl+drag does nothing; the handler returns immediately.
+  - The plain-selection (non-Ctrl) summarise toggle (`highlightEnabled`) is untouched and
+    independent of both new controls.
+- **Never renders model output as anything but escaped text in a popup** — the colour-off/
+  summarise-on path reuses the exact same `fetchSummary()` → `esc()` → `renderPopup()` sequence
+  every other AI-call site in `content.js` already uses; no new rendering path was introduced.
+
+Verified in `tests/browser/smoke.mjs`'s new "highlight toggles (item 26)" block: all four
+combinations produce the expected `{markCreated, popupShown, serverCallMade}` shape via the real
+Ctrl+drag simulation and a real mock-server call count, plus a live-settings-update check —
+apply a colour-only highlight, broadcast a `settings` message with `highlightSummarize: true` to
+the *same already-open tab* with no navigation, then confirm the very next highlight (a different
+phrase, so it cannot collide with the first) now triggers a summary. Two bugs were found and fixed
+while building this check, not left in the harness:
+
+- `selectAndCtrlDrag()` (added in item 25) hardcoded its text search to `#hl-target`'s first text
+  node; the live-update sub-test's second phrase lives in the fixture's *second* paragraph, so the
+  helper threw `IndexSizeError` (`indexOf` returning `-1`, read as the unsigned range offset
+  `4294967295`) the first time it was exercised against text outside that one element. Fixed by
+  walking every text node under `<body>` with a `TreeWalker` instead of assuming one fixed element.
+- The live-update sub-test's `noServerCallBeforeChange` sanity check compared a snapshot taken
+  *before* the settings broadcast against `apiHits.summarize` read *after* the second highlight had
+  already fired its own summarise call — so the comparison was always false regardless of whether
+  the broadcast itself was well-behaved. Fixed by snapshotting immediately after the broadcast and
+  before the second highlight, so the check actually isolates what it claims to isolate: that the
+  settings message alone makes no server call.
+
+Both the summarise-when-colour-chosen branch and the colour-off/summarise-on direct branch were
+independently negative-controlled — each temporarily disabled in `content.js`, rebuilt, and
+confirmed to change the corresponding combination's `popupShown`/`serverCallMade` result from `true`
+to `false` in a real Chromium run — before being restored, so the new smoke-test assertions are
+confirmed sensitive to the behaviour they claim to check, not merely passing against the current
+code by coincidence.
 
 ---
 
@@ -560,7 +727,7 @@ Verified by reading the tree. Line counts current as of this writing.
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
     ├── background.js          service worker
     ├── src/content/
-    │   ├── content.js           1471 — host: modules, settings, fetch, highlight, word lookup,
+    │   ├── content.js           1768 — host: modules, settings, fetch, highlight, word lookup,
     │   │                               selection, keyboard, SPA nav, render callbacks
     │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
     │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
@@ -568,7 +735,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── orchestrator.js       299 — detectors, engine, budget, the one subscriber; also drives
     │   │                               coverage-gate.js and quiz-offer.js from the same paragraph
     │   │                               signal (right at the ~300-line convention ceiling)
-    │   ├── comprehension-monitor.js 300 — pace vs. difficulty vs. personal baseline
+    │   ├── comprehension-monitor.js 315 — pace vs. difficulty vs. personal baseline; abstains
+    │   │                               (no expectation, no WPM sample) rather than guessing when
+    │   │                               text-difficulty.js reports basis: 'structure_unavailable'
     │   ├── receipt.js            282 — reader-owned session record + preview
     │   ├── reading-map.js        255 — sidebar minimap
     │   ├── focus-ruler.js        239 — reading band; already cursor/reading-line-first, gaze
@@ -636,9 +805,13 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                          markup/CSS and calibration-copy.js; persists via quiz-store.js
     │   ├── export.html/.js       markdown export of notes/highlights/sessions; script external
     │   │                          since item 21 (was inline, CSP-dead)
-    │   ├── highlights.html/.js   the colour-highlight list/filter/delete page; same item-21 fix
-    │   └── session-report.html/.js the per-session state-distribution report; same item-21 fix —
-    │                              still keyed on removed state names, see Known defects (item 22)
+    │   ├── highlights.html/.js   the colour-highlight list/filter/delete page; item-21's CSP fix
+    │   │                          plus item 25's per-document delete action
+    │   ├── session-report.html/.js the per-session state-distribution report; item-21's CSP fix
+    │   │                            plus item 22's state-vocabulary fix; loads as type="module" so
+    │   │                            it can import session-report-state.js
+    │   └── session-report-state.js STATE_COLORS/STATE_LABELS split out so a test can check them
+    │                                against state-engine.js's own STATES export (item 22)
     ├── src/shared/
     │   ├── config.js          the one place the backend origin is defined; classic script,
     │   │                       loaded before content.js, background.js and popup.js
@@ -865,22 +1038,80 @@ the guard actually catches a regression (not just that it passes): temporarily r
 inline `<script>` and, separately, an `onclick=` attribute into `export.html`, confirmed the test
 failed both times, then restored the file.
 
-**`session-report.js` still has a separate, known bug, not fixed here on purpose.** Its
-`STATE_COLORS`/`STATE_LABELS` are keyed on `focused`/`confused`/`zoning_out`/`overloaded` — state
-names the engine has not emitted since the gaze classifier was removed (see "Decisions already
-made" above: the current vocabulary is `on_pace`/`skimming`/`struggling`/`drifting`/`absent`/
-`unknown`). Before this item, that bug was unreachable — the whole script never ran. **Now that the
-script executes, this becomes a live but silent failure**: every session's state bar renders empty,
-because none of the five keys match a `stateDurations` field the engine ever writes. This is a
-separate, scoped fix (mapping display names onto the real state vocabulary), not a pure move, so it
-was left alone here rather than bundled in — tracked as its own follow-on item.
+✅ **Resolved: `session-report.js`'s state vocabulary.** Its `STATE_COLORS`/`STATE_LABELS` used to
+be keyed on `focused`/`confused`/`zoning_out`/`overloaded` — state names the engine has not emitted
+since the gaze classifier was removed. Before item 21, that bug was unreachable — the whole script
+never ran; item 21 made it a live but silent failure (state bar rendered empty). Fixed by
+remapping onto the real six-state vocabulary
+(`on_pace`/`skimming`/`struggling`/`drifting`/`absent`/`unknown`), split into a new module,
+`src/popup/session-report-state.js` (`session-report.html` now loads `session-report.js` as
+`type="module"` so it can `import` from it), specifically so `tests/session-report-state.test.js`
+can assert every key against `state-engine.js`'s own `STATES` export rather than a second
+hard-coded copy of the list — a future rename breaks the test, not the page. Colours use panel.css's
+dark-mode-aware tokens (`--sage-2`, `--warn`) where one exists for the CLAUDE.md-decided hue;
+`skimming`/`drifting` have no named token anywhere in the codebase (even `overlay.css`'s own state
+rules use the literal hex inline), so those two are the literal hex here too. `absent`/`unknown`
+have no hue decided in CLAUDE.md, so both get a neutral panel.css token rather than one implying a
+measurement — `unknown` is rendered, not hidden or folded into another bucket, per invariant 5.
+
+Two more bugs in the same render function, found while fixing the first and fixed alongside it,
+since leaving either broken would have meant "the bar chart works now but the rest of the page
+still silently reports nothing":
+
+- The "Confusion & Struggle Points" signal filter matched `s.type === 'backtrack'`,
+  `s.type === 'speed_mismatch'`, and `s.subtype === 'confused'`/`'overloaded'` — none of which
+  `session.signals` entries ever carry. `recordSignal()`'s three real call sites only ever push
+  `type: 'response'` (subtype `correct`/`incorrect`/`dismissed`), `type: 'cognitive'` (simulate/
+  manual paths only), or `type: state.label` (the real production path, only on a shown
+  interruption). `'backtrack'`/`'speed_mismatch'` are real telemetry-signal shapes but are never
+  themselves forwarded into `session.signals` — they only ever fold into a resulting struggling/
+  skimming state. The filter now matches `struggling`/`skimming`-typed signals and
+  `response`/`incorrect` signals, which is what the section is actually for. Renamed the section
+  from "Confusion & Struggle Points" to "Struggle Points" in the same pass.
+- The "Confusion Triggers" stat card read `session.confusionCount`, a field that has never existed
+  on the `entry` object `session-tracker.js`'s `save()` produces — the real field is
+  `struggleCount`. Fixed the key and renamed the stat to "Struggle Triggers" to match.
+
+**Audited the whole tree for the removed names** (`confused`, `overloaded`, `zoning_out`, `focused`
+as a state key), per this item's own instruction. Everything else found is either already correct
+or genuinely inert:
+
+- Already correct, no action needed: `notes.js`'s badge-text lookup (deliberate backward
+  compatibility for notes saved under the old vocabulary before this migration — the same pattern
+  as its `'gaze'` legacy value), `popup.js`'s `STATE_UI`/`LEGACY_STATES` (an explicit translation
+  layer, already fixed in an earlier item), `reading-map.js`'s `EVENT_COLOR` (already keyed on the
+  current vocabulary), `ui-controller.js`'s `showSimulateToast` (already correct, with a comment
+  explaining why), and a handful of plain-English uses of "confused"/"focused" in prose comments
+  that aren't vocabulary references at all (`comprehension-monitor.js`, `telemetry/
+  interaction-signals.js`).
+- **Inert, found, not fixed here** (different files, outside this item's scope, none produce wrong
+  behaviour today): `content.js`'s `triggerAIForParagraph()` mode/label lookup
+  (`reason === 'overloaded' ? ... : reason === 'confused' ? ...`, and a
+  `{confused:…, overloaded:…, zoning_out:…}[reason] || reason` table) is unreachable dead code —
+  every real caller passes a current state name or `'manual'` as `reason`, so it always falls
+  through to the safe default branch. Two stale comments describing dead mechanisms: `content.js`'s
+  "Image explanation (Ctrl+hover or gaze dwell while confused)" (only Ctrl+hover exists; there is
+  no gaze dwell path) and `tts-handler.js`'s "Speaks a paragraph aloud when confused/overloaded is
+  triggered" (TTS is gated by `ttsEnabled` and the current `reason` vocabulary). One larger find:
+  `dyslexia-utils.js` still exports `patchFeaturesForDyslexia()`, a function that damps
+  `regression_rate`/`avg_fixation_ms` — exactly the deleted gaze classifier's feature shape — with
+  **zero callers anywhere in source or tests**. This should likely have been caught by the original
+  gaze-removal item alongside `idle-overlay.js`/`lang-detect.js`, which were deleted for the
+  identical reason (existed solely to serve the gaze pipeline); it wasn't, and cleaning it up is a
+  small, separate, worthwhile follow-on. `tldr classifier/classifier.js` and its notebooks are the
+  documented historical training pipeline, excluded from lint and already covered by the Claims
+  Discipline section above — expected, not a defect.
 
 ### Convention drift
 
-`content.js` is **1616 lines** — down from 1754 after the gaze-path removal deleted roughly 280
-lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
-Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437); it was six
-before that removal. Settings live in `content.js` as loose `let`s read through accessors
+`content.js` is **1768 lines** — up from 1709 after item 26 added the two highlight toggles (colour
+picker/summarise-direct branching in the Ctrl+drag handler, plus the async summarise tail on
+`applyTextHighlight()`), up from 1616 after item 25 added the global highlight-document cap,
+position-hint anchoring and the SPA-navigation restore hook, and down from 1754 before the gaze-path
+removal deleted roughly 280 lines of camera/calibration/tracking wiring. Still the file most in need
+of splitting further. Three files exceed the ~300-line convention now (`content.js`,
+`ui-controller.js` at 437, `comprehension-monitor.js` at 315 after item 24's abstention fix); it was
+six before the gaze-path removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
 
@@ -888,10 +1119,11 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-452 tests pass, in 26 files (two classifier-guard files were deleted alongside the classifier they
+462 tests pass, in 27 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js,
-keyword-highlight.test.js and no-inline-scripts.test.js are new). `npm run lint` exits 0 with 4 warnings
+keyword-highlight.test.js, no-inline-scripts.test.js and session-report-state.test.js are new).
+`npm run lint` exits 0 with 4 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
 `npm test` and `npm run lint` rather than trusting this line.
 
@@ -918,16 +1150,51 @@ keyword-highlight.test.js and no-inline-scripts.test.js are new). `npm run lint`
   in both directions, `MIN_WORD_COUNT` gating, and **the reader-to-self fairness safeguard directly**
   — the test that establishes a personal slow-but-steady pace and then confirms the safeguard stops
   flagging it while still catching a genuine outlier is the single most important one in the file.
-  While adding this coverage, found and documented (not fixed, per this item's own instructions) a
-  real invariant-5 concern: when `text-difficulty.js` cannot measure sentence structure at all (a
-  script with no terminal punctuation, `structureIsUnreadable()`), it returns `score: 60, grade:
-  'standard'` — a plausible default standing in for missing data — rather than a signal the caller
-  can recognise as "no measurement available." `comprehension-monitor.js` never checks the `basis`
-  field that would let it tell the difference, so it treats that default exactly like a real
-  'standard' paragraph for both baseline calibration and speed-mismatch comparisons. Pinned by the
-  "difficulty basis: structure unavailable" test. **Not fixed here — worth its own item**, and
-  whichever of `text-difficulty.js` or `comprehension-monitor.js` ends up owning the abstention is
-  an open design question, not obviously the former.
+  While adding this coverage, found (item 7) and later closed (item 24) a real invariant-5 concern:
+  when `text-difficulty.js` cannot measure sentence structure at all (a script with no terminal
+  punctuation, `structureIsUnreadable()` — Thai, Khmer, Lao, Burmese are the affected readers, the
+  same population the segmentation work was done for), it returns `score: 60, grade: 'standard'`
+  labelled `basis: 'structure_unavailable'`. `comprehension-monitor.js` used to never check `basis`,
+  so it treated that placeholder exactly like a real 'standard' paragraph for both baseline
+  calibration and speed-mismatch comparisons — a plausible default standing in for missing data.
+
+  ✅ **Resolved (item 24).** `enterParagraph()` now checks `basis` and, when it is
+  `'structure_unavailable'`, never sets `paragraphEntry` at all — the same abstention shape as a
+  paragraph under the word-count floor. That one line closes every downstream path at once, because
+  `leaveParagraph()`'s own `if (!paragraphEntry) return null;` guard (already there for the
+  media/word-count cases) then makes the whole paragraph a no-op: no `expectedMs`, no residual
+  sample, no `speed_mismatch` signal, and — since `WpmBaseline.add()` is only ever reached from
+  inside that same guarded branch — no WPM-baseline contribution either. The paragraph resolves to
+  `unknown`, and `unknown` never interrupts.
+
+  **`text-difficulty.js`'s return shape was deliberately left unchanged.** `analyzeDifficulty()` has
+  exactly one caller anywhere in the shipped tree — this same `enterParagraph()` call — so there was
+  no second consumer to protect by keeping `score`/`grade` populated, and no second consumer to
+  break by removing them. The `basis: 'structure_unavailable'` field already carried everything the
+  one real caller needed; the defect was entirely on the consuming side never reading it. Changing
+  the producer's shape would have solved a problem that did not exist.
+
+  **Verified, not assumed, that the page keeps functioning more quietly rather than going silent.**
+  Backtrack detection (`onScroll()`) and scroll-regression read `window.scrollY` and paragraph
+  indices, never `paragraphEntry` or a `readability` object, so they were never at risk — confirmed
+  in a real Chromium load with a synthetic Thai-tagged, unpunctuated, 90-word paragraph: sitting on
+  it for several seconds produced zero speed-mismatch-related log lines, while a subsequent
+  scroll-down-then-sharply-back-up on the same page still produced a real `struggling` state from
+  backtrack detection. This is the CJK word-count failure's shape avoided on purpose rather than
+  reintroduced: quieter on the one signal that cannot be measured, not quieter everywhere.
+
+  `tests/comprehension-monitor.test.js`'s "difficulty basis" describe block was rewritten from
+  documenting the finding to asserting the fix: no expectation, no residual, no WPM-baseline sample
+  (checked against the `'th'`-specific baseline via a follow-up measurable paragraph's expected time,
+  since the public `getBaselineWpm()` accessor only ever reports the `'en'`/fallback bucket and would
+  have passed either way), the `wordCount > 60` boundary confirmed on the non-triggering side too,
+  and backtrack detection confirmed still live on an all-unmeasurable page. A genuine test-isolation
+  hazard was found and fixed while adding these: `detectLanguage()`'s module-level cache is keyed on
+  wall-clock time via `Date.now()`, but this test file's `beforeEach` resets the fake clock to the
+  *same* fixed instant before every test, so a cache write from a previous test that had advanced
+  its own clock further could leave the cache looking "fresh" to a later test's much smaller
+  advance — busted by advancing a full fake day instead of a few seconds, comfortably clear of any
+  cumulative advance any single test in the file performs.
 - **No end-to-end reading session** with clock advancement across minutes.
 - **Question quality is untested.** `npm run questions:review` mechanises what can be mechanised —
   span really in the passage, question/span lexical overlap, giveaway distractors, conspicuous
