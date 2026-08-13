@@ -637,8 +637,11 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── export.html/.js       markdown export of notes/highlights/sessions; script external
     │   │                          since item 21 (was inline, CSP-dead)
     │   ├── highlights.html/.js   the colour-highlight list/filter/delete page; same item-21 fix
-    │   └── session-report.html/.js the per-session state-distribution report; same item-21 fix —
-    │                              still keyed on removed state names, see Known defects (item 22)
+    │   ├── session-report.html/.js the per-session state-distribution report; item-21's CSP fix
+    │   │                            plus item 22's state-vocabulary fix; loads as type="module" so
+    │   │                            it can import session-report-state.js
+    │   └── session-report-state.js STATE_COLORS/STATE_LABELS split out so a test can check them
+    │                                against state-engine.js's own STATES export (item 22)
     ├── src/shared/
     │   ├── config.js          the one place the backend origin is defined; classic script,
     │   │                       loaded before content.js, background.js and popup.js
@@ -865,15 +868,69 @@ the guard actually catches a regression (not just that it passes): temporarily r
 inline `<script>` and, separately, an `onclick=` attribute into `export.html`, confirmed the test
 failed both times, then restored the file.
 
-**`session-report.js` still has a separate, known bug, not fixed here on purpose.** Its
-`STATE_COLORS`/`STATE_LABELS` are keyed on `focused`/`confused`/`zoning_out`/`overloaded` — state
-names the engine has not emitted since the gaze classifier was removed (see "Decisions already
-made" above: the current vocabulary is `on_pace`/`skimming`/`struggling`/`drifting`/`absent`/
-`unknown`). Before this item, that bug was unreachable — the whole script never ran. **Now that the
-script executes, this becomes a live but silent failure**: every session's state bar renders empty,
-because none of the five keys match a `stateDurations` field the engine ever writes. This is a
-separate, scoped fix (mapping display names onto the real state vocabulary), not a pure move, so it
-was left alone here rather than bundled in — tracked as its own follow-on item.
+✅ **Resolved: `session-report.js`'s state vocabulary.** Its `STATE_COLORS`/`STATE_LABELS` used to
+be keyed on `focused`/`confused`/`zoning_out`/`overloaded` — state names the engine has not emitted
+since the gaze classifier was removed. Before item 21, that bug was unreachable — the whole script
+never ran; item 21 made it a live but silent failure (state bar rendered empty). Fixed by
+remapping onto the real six-state vocabulary
+(`on_pace`/`skimming`/`struggling`/`drifting`/`absent`/`unknown`), split into a new module,
+`src/popup/session-report-state.js` (`session-report.html` now loads `session-report.js` as
+`type="module"` so it can `import` from it), specifically so `tests/session-report-state.test.js`
+can assert every key against `state-engine.js`'s own `STATES` export rather than a second
+hard-coded copy of the list — a future rename breaks the test, not the page. Colours use panel.css's
+dark-mode-aware tokens (`--sage-2`, `--warn`) where one exists for the CLAUDE.md-decided hue;
+`skimming`/`drifting` have no named token anywhere in the codebase (even `overlay.css`'s own state
+rules use the literal hex inline), so those two are the literal hex here too. `absent`/`unknown`
+have no hue decided in CLAUDE.md, so both get a neutral panel.css token rather than one implying a
+measurement — `unknown` is rendered, not hidden or folded into another bucket, per invariant 5.
+
+Two more bugs in the same render function, found while fixing the first and fixed alongside it,
+since leaving either broken would have meant "the bar chart works now but the rest of the page
+still silently reports nothing":
+
+- The "Confusion & Struggle Points" signal filter matched `s.type === 'backtrack'`,
+  `s.type === 'speed_mismatch'`, and `s.subtype === 'confused'`/`'overloaded'` — none of which
+  `session.signals` entries ever carry. `recordSignal()`'s three real call sites only ever push
+  `type: 'response'` (subtype `correct`/`incorrect`/`dismissed`), `type: 'cognitive'` (simulate/
+  manual paths only), or `type: state.label` (the real production path, only on a shown
+  interruption). `'backtrack'`/`'speed_mismatch'` are real telemetry-signal shapes but are never
+  themselves forwarded into `session.signals` — they only ever fold into a resulting struggling/
+  skimming state. The filter now matches `struggling`/`skimming`-typed signals and
+  `response`/`incorrect` signals, which is what the section is actually for. Renamed the section
+  from "Confusion & Struggle Points" to "Struggle Points" in the same pass.
+- The "Confusion Triggers" stat card read `session.confusionCount`, a field that has never existed
+  on the `entry` object `session-tracker.js`'s `save()` produces — the real field is
+  `struggleCount`. Fixed the key and renamed the stat to "Struggle Triggers" to match.
+
+**Audited the whole tree for the removed names** (`confused`, `overloaded`, `zoning_out`, `focused`
+as a state key), per this item's own instruction. Everything else found is either already correct
+or genuinely inert:
+
+- Already correct, no action needed: `notes.js`'s badge-text lookup (deliberate backward
+  compatibility for notes saved under the old vocabulary before this migration — the same pattern
+  as its `'gaze'` legacy value), `popup.js`'s `STATE_UI`/`LEGACY_STATES` (an explicit translation
+  layer, already fixed in an earlier item), `reading-map.js`'s `EVENT_COLOR` (already keyed on the
+  current vocabulary), `ui-controller.js`'s `showSimulateToast` (already correct, with a comment
+  explaining why), and a handful of plain-English uses of "confused"/"focused" in prose comments
+  that aren't vocabulary references at all (`comprehension-monitor.js`, `telemetry/
+  interaction-signals.js`).
+- **Inert, found, not fixed here** (different files, outside this item's scope, none produce wrong
+  behaviour today): `content.js`'s `triggerAIForParagraph()` mode/label lookup
+  (`reason === 'overloaded' ? ... : reason === 'confused' ? ...`, and a
+  `{confused:…, overloaded:…, zoning_out:…}[reason] || reason` table) is unreachable dead code —
+  every real caller passes a current state name or `'manual'` as `reason`, so it always falls
+  through to the safe default branch. Two stale comments describing dead mechanisms: `content.js`'s
+  "Image explanation (Ctrl+hover or gaze dwell while confused)" (only Ctrl+hover exists; there is
+  no gaze dwell path) and `tts-handler.js`'s "Speaks a paragraph aloud when confused/overloaded is
+  triggered" (TTS is gated by `ttsEnabled` and the current `reason` vocabulary). One larger find:
+  `dyslexia-utils.js` still exports `patchFeaturesForDyslexia()`, a function that damps
+  `regression_rate`/`avg_fixation_ms` — exactly the deleted gaze classifier's feature shape — with
+  **zero callers anywhere in source or tests**. This should likely have been caught by the original
+  gaze-removal item alongside `idle-overlay.js`/`lang-detect.js`, which were deleted for the
+  identical reason (existed solely to serve the gaze pipeline); it wasn't, and cleaning it up is a
+  small, separate, worthwhile follow-on. `tldr classifier/classifier.js` and its notebooks are the
+  documented historical training pipeline, excluded from lint and already covered by the Claims
+  Discipline section above — expected, not a defect.
 
 ### Convention drift
 
@@ -888,10 +945,11 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-452 tests pass, in 26 files (two classifier-guard files were deleted alongside the classifier they
+458 tests pass, in 27 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js,
-keyword-highlight.test.js and no-inline-scripts.test.js are new). `npm run lint` exits 0 with 4 warnings
+keyword-highlight.test.js, no-inline-scripts.test.js and session-report-state.test.js are new).
+`npm run lint` exits 0 with 4 warnings
 (all `no-unused-vars` in untouched files). These numbers drift with every PR; re-check with
 `npm test` and `npm run lint` rather than trusting this line.
 
