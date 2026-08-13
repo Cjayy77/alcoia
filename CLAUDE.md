@@ -545,6 +545,73 @@ confirmed to fail the corresponding check before being restored.
 
 ---
 
+## Two highlight toggles — decided, implemented (item 26)
+
+✅ **Implemented.** Item 25's colour highlight always did exactly one thing — mark the passage in
+colour, locally, for free. Item 26 splits "what Ctrl+drag does" into **two independent controls**,
+not one four-way mode dropdown: **colour** (free, client-only, on by default) and **summarise**
+(the AI-calling half, off by default). A reader can want the colour mark without spending an assist
+on every one of them, or want the AI explanation without a permanent coloured mark cluttering the
+page.
+
+- **Two `let`s in `content.js`, read live at the point of action** — `highlightColorEnabled` /
+  `highlightSummarizeEnabled` — the same pattern every other setting in this file already uses
+  (`assistantEnabled`, `selectionEnabled`, etc.), so a popup change takes effect on the very next
+  Ctrl+drag with no page reload. Backed by `sra_highlight_color` (default `true`) and
+  `sra_highlight_summarize` (default `false`) in `chrome.storage.local`, wired into both the
+  boot-time defaults/callback and the live `msg.type === 'settings'` handler.
+- **Popup gains two new toggle cells**, in the same "How it helps" section as the existing
+  highlight toggle, each with its own cost-legible description ("Costs nothing — stays on your
+  device" vs. "uses one assist each time") — the two-toggle shape was chosen specifically so the
+  assist-cost model stays legible per control, rather than bundled into one selector where a reader
+  can't tell which combination spends a call.
+- **Four real combinations, not a synthetic matrix** — verified against the actual Ctrl+drag
+  handler and `applyTextHighlight()`, not asserted from the outside:
+  - **colour ON, summarise OFF (default)** — unchanged from item 25: colour picker, a mark, no
+    server call.
+  - **colour ON, summarise ON** — the picker still appears (colour is chosen first); once a swatch
+    is picked, `applyTextHighlight()` itself checks `highlightSummarizeEnabled` and, if set, fetches
+    a summary and renders it as a popup **after** the mark already exists — a failed fetch degrades
+    to silence (invariant 9) without undoing the mark that already landed.
+  - **colour OFF, summarise ON** — resolved via `AskUserQuestion` rather than left ambiguous: this
+    is the rejected four-way dropdown's "summary only" mode, ported into the two-toggle design.
+    Ctrl+drag summarises the selection **directly**, with no colour picker and no mark at all.
+  - **colour OFF, summarise OFF** — Ctrl+drag does nothing; the handler returns immediately.
+  - The plain-selection (non-Ctrl) summarise toggle (`highlightEnabled`) is untouched and
+    independent of both new controls.
+- **Never renders model output as anything but escaped text in a popup** — the colour-off/
+  summarise-on path reuses the exact same `fetchSummary()` → `esc()` → `renderPopup()` sequence
+  every other AI-call site in `content.js` already uses; no new rendering path was introduced.
+
+Verified in `tests/browser/smoke.mjs`'s new "highlight toggles (item 26)" block: all four
+combinations produce the expected `{markCreated, popupShown, serverCallMade}` shape via the real
+Ctrl+drag simulation and a real mock-server call count, plus a live-settings-update check —
+apply a colour-only highlight, broadcast a `settings` message with `highlightSummarize: true` to
+the *same already-open tab* with no navigation, then confirm the very next highlight (a different
+phrase, so it cannot collide with the first) now triggers a summary. Two bugs were found and fixed
+while building this check, not left in the harness:
+
+- `selectAndCtrlDrag()` (added in item 25) hardcoded its text search to `#hl-target`'s first text
+  node; the live-update sub-test's second phrase lives in the fixture's *second* paragraph, so the
+  helper threw `IndexSizeError` (`indexOf` returning `-1`, read as the unsigned range offset
+  `4294967295`) the first time it was exercised against text outside that one element. Fixed by
+  walking every text node under `<body>` with a `TreeWalker` instead of assuming one fixed element.
+- The live-update sub-test's `noServerCallBeforeChange` sanity check compared a snapshot taken
+  *before* the settings broadcast against `apiHits.summarize` read *after* the second highlight had
+  already fired its own summarise call — so the comparison was always false regardless of whether
+  the broadcast itself was well-behaved. Fixed by snapshotting immediately after the broadcast and
+  before the second highlight, so the check actually isolates what it claims to isolate: that the
+  settings message alone makes no server call.
+
+Both the summarise-when-colour-chosen branch and the colour-off/summarise-on direct branch were
+independently negative-controlled — each temporarily disabled in `content.js`, rebuilt, and
+confirmed to change the corresponding combination's `popupShown`/`serverCallMade` result from `true`
+to `false` in a real Chromium run — before being restored, so the new smoke-test assertions are
+confirmed sensitive to the behaviour they claim to check, not merely passing against the current
+code by coincidence.
+
+---
+
 ## Confidence calibration — decided shape
 
 ✅ **Implemented in `question-card.js`.** Clicking an option only selects it (`.sra-q-selected`);
@@ -660,7 +727,7 @@ Verified by reading the tree. Line counts current as of this writing.
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
     ├── background.js          service worker
     ├── src/content/
-    │   ├── content.js           1709 — host: modules, settings, fetch, highlight, word lookup,
+    │   ├── content.js           1768 — host: modules, settings, fetch, highlight, word lookup,
     │   │                               selection, keyboard, SPA nav, render callbacks
     │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
     │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
@@ -1037,7 +1104,9 @@ or genuinely inert:
 
 ### Convention drift
 
-`content.js` is **1709 lines** — up from 1616 after item 25 added the global highlight-document cap,
+`content.js` is **1768 lines** — up from 1709 after item 26 added the two highlight toggles (colour
+picker/summarise-direct branching in the Ctrl+drag handler, plus the async summarise tail on
+`applyTextHighlight()`), up from 1616 after item 25 added the global highlight-document cap,
 position-hint anchoring and the SPA-navigation restore hook, and down from 1754 before the gaze-path
 removal deleted roughly 280 lines of camera/calibration/tracking wiring. Still the file most in need
 of splitting further. Three files exceed the ~300-line convention now (`content.js`,
