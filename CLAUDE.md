@@ -440,8 +440,108 @@ in-product note on the quiz page itself.
 - **No retake.** This is why passage text is **not** stored — only questions, the reader's answers
   and confidence ratings, and verdicts. Review works; regeneration does not.
 - **Deletable**, per document and all at once, and deletion must actually delete.
-- **This is the first feature that writes reading content to disk.** Privacy copy must be updated in
-  the same change, not later.
+- **This writes reading content to disk** and privacy copy must reflect that. ⚠️ It is not the
+  *first* feature to do so, though earlier drafts of this file and both READMEs said it was:
+  colour highlights (`sra_text_highlights`, Ctrl+drag) already did, and predate every item in this
+  file's sequence — see "Persistent colour highlights" below, where item 25 found and corrected the
+  claim everywhere it appeared.
+
+---
+
+## Persistent colour highlights — pre-existing, verified and hardened (item 25)
+
+✅ **This feature already existed and already worked before item 25 started.** The brief that
+launched item 25 described it as unbuilt ("Ctrl+drag highlights do not survive a page reload...
+nothing is written to storage") — that description was wrong for the code as it stood, not
+aspirational. `applyTextHighlight()`, `restoreTextHighlights()` and `restoreSingleHighlight()` were
+already persisting to `sra_text_highlights` and already re-anchoring on load via a W3C
+TextQuoteSelector-shaped prefix/suffix context match, dated to a commit that predates item 3 — i.e.
+before this file's own sequenced-item history begins. **Verified in a real Chromium load before
+changing anything**, using a synthetic Ctrl+drag-shaped gesture (a real `MouseEvent('mouseup',
+{ctrlKey:true})` dispatched on the element under the selection — dispatching on `document` instead
+does not work, `window.getSelection()` reads empty by the time the handler runs) and a color-picker
+swatch click: highlight → reload → still there, confirmed round-trip, before any code in this item
+was touched. This is exactly the kind of brief-vs-code conflict CLAUDE.md exists to catch — flagged
+here, not silently built over.
+
+**What item 25 actually did, given the above:** audit the existing mechanism against the brief's
+specific requirements, harden the real gaps found, and fix the resulting documentation error
+(the "first feature" claim above and in both READMEs).
+
+- ✅ **Global (cross-document) storage cap added.** `sra_text_highlights` had a per-document cap
+  (100 entries, unnamed magic number) but nothing bounding the number of *documents* — a reader who
+  highlighted on hundreds of pages would grow the store without limit. `MAX_HIGHLIGHT_DOCS = 150`
+  now matches `coverage-gate.js`'s `MAX_DOCS` and the existing `sra_last_visit` cap — the same shape
+  used everywhere else in this codebase that keys data per document. Least-recently-touched document
+  is evicted, derived from the newest `timestamp` among that document's own highlight entries (the
+  stored shape has no separate per-document metadata to hold one directly, and changing the shape to
+  add one would mean migrating every existing reader's stored highlights and every other reader of
+  the shape — `highlights.js`, `export.js` — for a cap that does not need it). Verified with a real
+  Chromium load: a store seeded with 150 documents plus one at the per-document cap, followed by one
+  real Ctrl+drag highlight, ends at exactly 150 documents with the genuinely-oldest one evicted —
+  confirmed by asserting the specific document is gone, not just that the count dropped, and
+  confirmed the negative case too (reverting the cap logic leaves the store at 151 and the oldest
+  document still present).
+- ✅ **Position added as a secondary anchor signal, per the item's explicit "Do."** A `paragraphIndex`
+  (the highlighted text's containing block's index among `p, li, blockquote` — the same selector
+  `paragraph-tracker.js` scans) is now captured at creation and used at restore time, but strictly as
+  a tie-breaker: `restoreSingleHighlight()` now collects **every** occurrence of the highlighted text
+  on the page (the old version stopped at the first), scores each by whether the stored prefix/suffix
+  context matches around it, and only consults `paragraphIndex` to choose between candidates that
+  already passed the context check. A candidate with no context confirmation is never selected by
+  position alone, even if it is the only "close" one — multiple identical-text matches with no
+  context confirmation anywhere is treated as genuinely ambiguous and the entry is left unrestored
+  this visit, per the item's explicit "do not re-anchor by position alone."
+- ✅ **`ctxAfter` was captured at creation and silently never read at restoration.** Only `ctxBefore`
+  was checked, with a loose fuzzy comparison. Restoration now checks both, tightened alongside the
+  position-scoring work above.
+- ✅ **SPA navigation now re-triggers restoration** — it previously only ran once, at initial page
+  load, so a client-rendered route change never brought back highlights for the new route without a
+  full reload. `onSpaNavigate()` now calls `restoreTextHighlights()` (debounced 300ms to let the SPA
+  framework actually render the new route's content first; `restoreSingleHighlight()`'s existing
+  fail-silent behaviour means a still-mid-transition DOM just yields no match rather than a wrong
+  one). **Found in the process, not fixed here — a real, pre-existing, separate defect:**
+  `onSpaNavigate()` is wired to both `popstate` and a monkey-patch of `history.pushState`/
+  `replaceState`, but the patch is applied in the content script's isolated world, which does not
+  propagate to the page's own main-world `history` object — confirmed directly, not assumed, by
+  reading `history.pushState.toString()` from a `page.evaluate()` call (main-world code, the same
+  world a real SPA framework's own routing runs in) immediately after the patch executes: still
+  `function pushState() { [native code] }`. A real single-page app's own route changes, which almost
+  always call `pushState` rather than triggering `popstate` directly, **never actually reach
+  `onSpaNavigate()` at all** — only genuine `popstate` events (browser back/forward) do, since that is
+  a real DOM event delivered to both worlds. This item's own SPA-navigation test in
+  `tests/browser/smoke.mjs` exercises `popstate` (`history.back()`) specifically, not `pushState`,
+  because a `pushState`-based version would have silently proven nothing. Fixing the underlying gap
+  would mean a MAIN-world bridge — the exact shape of thing the gaze-removal item deleted
+  (`sra-page-bridge.js`, `webgazer-bootstrap.js`) — and deserves the same deliberate reconsideration
+  a new MAIN-world injection always gets, not a quick patch bundled into an unrelated item.
+- ✅ **Per-document deletion added to `highlights.js`.** The page already had per-highlight delete
+  and delete-all; per-document ("delete every highlight on this one page") was missing. Added as a
+  "Delete all on this page" action on every card for that document — the list is not grouped by
+  document, so this was the smallest addition rather than restructuring the page into groups.
+- ✅ **`documentKey()` (`coverage-gate.js`) and `applyTextHighlight()`'s `urlKey` normalise
+  identically** — both are `hostname + pathname`, no separator, no query string, no hash. Checked
+  directly, per the item's own instruction to report rather than assume; no reconciliation needed.
+- ✅ **Already correct, verified rather than assumed:** anchoring failure leaves the entry in
+  storage rather than deleting it (a later visit might succeed), confirmed with a highlight whose
+  text does not exist anywhere on the page — zero marks rendered, zero page errors, entry still
+  present in storage afterward. Deletion (double-click) already removed both the DOM mark and the
+  storage entry, and both stayed gone after a further reload.
+- **No accuracy or retention claim introduced anywhere.** Highlighting on its own has weak evidence
+  as a study technique — it is shipped purely as a reader-controlled tool, described mechanically,
+  with no language anywhere implying it aids comprehension or retention.
+- **Local only, level B**, unchanged — nothing about this item transmits highlight content anywhere.
+
+Verified with `tests/browser/smoke.mjs`'s new "colour highlights (item 25)" block: real-UI round
+trip (creation via the simulated Ctrl+drag gesture through to survives-a-reload), deletion removing
+both the DOM node and the storage entry and staying gone after another reload, anchoring surviving
+three paragraphs of unrelated content inserted before the highlighted text (same document key,
+different absolute position entirely), anchoring failing silently when the text is genuinely gone,
+restoration after a `popstate`-driven SPA navigation, and both storage caps holding under a seeded
+worst case — including confirming the *specific* document evicted is the genuinely oldest one, not
+just that the count dropped. Every new assertion in this block was verified against the actual
+regression it guards: the global-cap and position-hint logic were each independently reverted and
+confirmed to fail the corresponding check before being restored.
 
 ---
 
@@ -560,7 +660,7 @@ Verified by reading the tree. Line counts current as of this writing.
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
     ├── background.js          service worker
     ├── src/content/
-    │   ├── content.js           1471 — host: modules, settings, fetch, highlight, word lookup,
+    │   ├── content.js           1709 — host: modules, settings, fetch, highlight, word lookup,
     │   │                               selection, keyboard, SPA nav, render callbacks
     │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
     │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
@@ -638,7 +738,8 @@ Verified by reading the tree. Line counts current as of this writing.
     │   │                          markup/CSS and calibration-copy.js; persists via quiz-store.js
     │   ├── export.html/.js       markdown export of notes/highlights/sessions; script external
     │   │                          since item 21 (was inline, CSP-dead)
-    │   ├── highlights.html/.js   the colour-highlight list/filter/delete page; same item-21 fix
+    │   ├── highlights.html/.js   the colour-highlight list/filter/delete page; item-21's CSP fix
+    │   │                          plus item 25's per-document delete action
     │   ├── session-report.html/.js the per-session state-distribution report; item-21's CSP fix
     │   │                            plus item 22's state-vocabulary fix; loads as type="module" so
     │   │                            it can import session-report-state.js
@@ -936,11 +1037,12 @@ or genuinely inert:
 
 ### Convention drift
 
-`content.js` is **1616 lines** — down from 1754 after the gaze-path removal deleted roughly 280
-lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
-Three files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437,
-`comprehension-monitor.js` at 315 after item 24's abstention fix); it was six before the gaze-path
-removal. Settings live in `content.js` as loose `let`s read through accessors
+`content.js` is **1709 lines** — up from 1616 after item 25 added the global highlight-document cap,
+position-hint anchoring and the SPA-navigation restore hook, and down from 1754 before the gaze-path
+removal deleted roughly 280 lines of camera/calibration/tracking wiring. Still the file most in need
+of splitting further. Three files exceed the ~300-line convention now (`content.js`,
+`ui-controller.js` at 437, `comprehension-monitor.js` at 315 after item 24's abstention fix); it was
+six before the gaze-path removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
 
