@@ -568,7 +568,9 @@ Verified by reading the tree. Line counts current as of this writing.
     │   ├── orchestrator.js       299 — detectors, engine, budget, the one subscriber; also drives
     │   │                               coverage-gate.js and quiz-offer.js from the same paragraph
     │   │                               signal (right at the ~300-line convention ceiling)
-    │   ├── comprehension-monitor.js 300 — pace vs. difficulty vs. personal baseline
+    │   ├── comprehension-monitor.js 315 — pace vs. difficulty vs. personal baseline; abstains
+    │   │                               (no expectation, no WPM sample) rather than guessing when
+    │   │                               text-difficulty.js reports basis: 'structure_unavailable'
     │   ├── receipt.js            282 — reader-owned session record + preview
     │   ├── reading-map.js        255 — sidebar minimap
     │   ├── focus-ruler.js        239 — reading band; already cursor/reading-line-first, gaze
@@ -936,8 +938,9 @@ or genuinely inert:
 
 `content.js` is **1616 lines** — down from 1754 after the gaze-path removal deleted roughly 280
 lines of camera/calibration/tracking wiring, but still the file most in need of splitting further.
-Two files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437); it was six
-before that removal. Settings live in `content.js` as loose `let`s read through accessors
+Three files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437,
+`comprehension-monitor.js` at 315 after item 24's abstention fix); it was six before the gaze-path
+removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
 
@@ -945,7 +948,7 @@ goes stale silently. **Add new logic to the new modules, never to `content.js`.*
 
 ## Known gaps in test coverage — read before trusting a green run
 
-458 tests pass, in 27 files (two classifier-guard files were deleted alongside the classifier they
+462 tests pass, in 27 files (two classifier-guard files were deleted alongside the classifier they
 guarded — see the gaze-path migration note — and comprehension-monitor.test.js,
 failure-paths.test.js, install-token.test.js, snooze.test.js, quiz-store.test.js,
 keyword-highlight.test.js, no-inline-scripts.test.js and session-report-state.test.js are new).
@@ -976,16 +979,51 @@ keyword-highlight.test.js, no-inline-scripts.test.js and session-report-state.te
   in both directions, `MIN_WORD_COUNT` gating, and **the reader-to-self fairness safeguard directly**
   — the test that establishes a personal slow-but-steady pace and then confirms the safeguard stops
   flagging it while still catching a genuine outlier is the single most important one in the file.
-  While adding this coverage, found and documented (not fixed, per this item's own instructions) a
-  real invariant-5 concern: when `text-difficulty.js` cannot measure sentence structure at all (a
-  script with no terminal punctuation, `structureIsUnreadable()`), it returns `score: 60, grade:
-  'standard'` — a plausible default standing in for missing data — rather than a signal the caller
-  can recognise as "no measurement available." `comprehension-monitor.js` never checks the `basis`
-  field that would let it tell the difference, so it treats that default exactly like a real
-  'standard' paragraph for both baseline calibration and speed-mismatch comparisons. Pinned by the
-  "difficulty basis: structure unavailable" test. **Not fixed here — worth its own item**, and
-  whichever of `text-difficulty.js` or `comprehension-monitor.js` ends up owning the abstention is
-  an open design question, not obviously the former.
+  While adding this coverage, found (item 7) and later closed (item 24) a real invariant-5 concern:
+  when `text-difficulty.js` cannot measure sentence structure at all (a script with no terminal
+  punctuation, `structureIsUnreadable()` — Thai, Khmer, Lao, Burmese are the affected readers, the
+  same population the segmentation work was done for), it returns `score: 60, grade: 'standard'`
+  labelled `basis: 'structure_unavailable'`. `comprehension-monitor.js` used to never check `basis`,
+  so it treated that placeholder exactly like a real 'standard' paragraph for both baseline
+  calibration and speed-mismatch comparisons — a plausible default standing in for missing data.
+
+  ✅ **Resolved (item 24).** `enterParagraph()` now checks `basis` and, when it is
+  `'structure_unavailable'`, never sets `paragraphEntry` at all — the same abstention shape as a
+  paragraph under the word-count floor. That one line closes every downstream path at once, because
+  `leaveParagraph()`'s own `if (!paragraphEntry) return null;` guard (already there for the
+  media/word-count cases) then makes the whole paragraph a no-op: no `expectedMs`, no residual
+  sample, no `speed_mismatch` signal, and — since `WpmBaseline.add()` is only ever reached from
+  inside that same guarded branch — no WPM-baseline contribution either. The paragraph resolves to
+  `unknown`, and `unknown` never interrupts.
+
+  **`text-difficulty.js`'s return shape was deliberately left unchanged.** `analyzeDifficulty()` has
+  exactly one caller anywhere in the shipped tree — this same `enterParagraph()` call — so there was
+  no second consumer to protect by keeping `score`/`grade` populated, and no second consumer to
+  break by removing them. The `basis: 'structure_unavailable'` field already carried everything the
+  one real caller needed; the defect was entirely on the consuming side never reading it. Changing
+  the producer's shape would have solved a problem that did not exist.
+
+  **Verified, not assumed, that the page keeps functioning more quietly rather than going silent.**
+  Backtrack detection (`onScroll()`) and scroll-regression read `window.scrollY` and paragraph
+  indices, never `paragraphEntry` or a `readability` object, so they were never at risk — confirmed
+  in a real Chromium load with a synthetic Thai-tagged, unpunctuated, 90-word paragraph: sitting on
+  it for several seconds produced zero speed-mismatch-related log lines, while a subsequent
+  scroll-down-then-sharply-back-up on the same page still produced a real `struggling` state from
+  backtrack detection. This is the CJK word-count failure's shape avoided on purpose rather than
+  reintroduced: quieter on the one signal that cannot be measured, not quieter everywhere.
+
+  `tests/comprehension-monitor.test.js`'s "difficulty basis" describe block was rewritten from
+  documenting the finding to asserting the fix: no expectation, no residual, no WPM-baseline sample
+  (checked against the `'th'`-specific baseline via a follow-up measurable paragraph's expected time,
+  since the public `getBaselineWpm()` accessor only ever reports the `'en'`/fallback bucket and would
+  have passed either way), the `wordCount > 60` boundary confirmed on the non-triggering side too,
+  and backtrack detection confirmed still live on an all-unmeasurable page. A genuine test-isolation
+  hazard was found and fixed while adding these: `detectLanguage()`'s module-level cache is keyed on
+  wall-clock time via `Date.now()`, but this test file's `beforeEach` resets the fake clock to the
+  *same* fixed instant before every test, so a cache write from a previous test that had advanced
+  its own clock further could leave the cache looking "fresh" to a later test's much smaller
+  advance — busted by advancing a full fake day instead of a few seconds, comfortably clear of any
+  cumulative advance any single test in the file performs.
 - **No end-to-end reading session** with clock advancement across minutes.
 - **Question quality is untested.** `npm run questions:review` mechanises what can be mechanised —
   span really in the passage, question/span lexical overlap, giveaway distractors, conspicuous
