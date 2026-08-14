@@ -500,7 +500,7 @@ specific requirements, harden the real gaps found, and fix the resulting documen
   full reload. `onSpaNavigate()` now calls `restoreTextHighlights()` (debounced 300ms to let the SPA
   framework actually render the new route's content first; `restoreSingleHighlight()`'s existing
   fail-silent behaviour means a still-mid-transition DOM just yields no match rather than a wrong
-  one). **Found in the process, not fixed here — a real, pre-existing, separate defect:**
+  one). **Found in the process, not fixed here at the time — a real, pre-existing, separate defect:**
   `onSpaNavigate()` is wired to both `popstate` and a monkey-patch of `history.pushState`/
   `replaceState`, but the patch is applied in the content script's isolated world, which does not
   propagate to the page's own main-world `history` object — confirmed directly, not assumed, by
@@ -511,10 +511,9 @@ specific requirements, harden the real gaps found, and fix the resulting documen
   `onSpaNavigate()` at all** — only genuine `popstate` events (browser back/forward) do, since that is
   a real DOM event delivered to both worlds. This item's own SPA-navigation test in
   `tests/browser/smoke.mjs` exercises `popstate` (`history.back()`) specifically, not `pushState`,
-  because a `pushState`-based version would have silently proven nothing. Fixing the underlying gap
-  would mean a MAIN-world bridge — the exact shape of thing the gaze-removal item deleted
-  (`sra-page-bridge.js`, `webgazer-bootstrap.js`) — and deserves the same deliberate reconsideration
-  a new MAIN-world injection always gets, not a quick patch bundled into an unrelated item.
+  because a `pushState`-based version would have silently proven nothing. **✅ Resolved in item 27 —
+  see "SPA route-change detection" below — without a MAIN-world bridge**, using
+  `chrome.webNavigation.onHistoryStateUpdated` instead.
 - ✅ **Per-document deletion added to `highlights.js`.** The page already had per-highlight delete
   and delete-all; per-document ("delete every highlight on this one page") was missing. Added as a
   "Delete all on this page" action on every card for that document — the list is not grouped by
@@ -609,6 +608,100 @@ confirmed to change the corresponding combination's `popupShown`/`serverCallMade
 to `false` in a real Chromium run — before being restored, so the new smoke-test assertions are
 confirmed sensitive to the behaviour they claim to check, not merely passing against the current
 code by coincidence.
+
+---
+
+## SPA route-change detection — decided, implemented (item 27)
+
+✅ **Implemented, without a MAIN-world bridge.** Item 25 found and documented, but deliberately did
+not fix, that a real single-page app's route change never reached `onSpaNavigate()` — the isolated-
+world `history.pushState`/`replaceState` monkey-patch cannot see a page-context script calling
+`pushState` directly, and only genuine `popstate` (back/forward) is a real DOM event delivered to
+both worlds. Coverage never reset between articles on a pushState-routed site, paragraph tracking
+carried stale state across documents, and highlights never re-anchored after a route change — the
+same "loads fine, throws nothing, silently does the wrong thing" shape as `cursor_reading` and the
+CJK word-count defect.
+
+**Option (a) won, as expected going in.** `chrome.webNavigation.onHistoryStateUpdated` fires from
+the browser itself — independent of which JS world the `history` API call originated in — so it
+needs no page-context injection at all: no MAIN-world script, no bridge, none of the machinery the
+gaze-removal item deleted for exactly that reason (`sra-page-bridge.js`, `webgazer-bootstrap.js`).
+**The `webNavigation` permission was already declared in `manifests/base.json`** — verified, not
+assumed, before relying on it — though it turned out to be unused: the README described it as
+backing `background.js`'s `file://` PDF/PPTX redirect, but that redirect is actually built on
+`chrome.tabs.onUpdated`. **No new permission was added for this item.**
+
+- **`background.js`** adds one listener: `chrome.webNavigation.onHistoryStateUpdated`, filtered to
+  `frameId === 0` (top frame only — content scripts run there only too, `all_frames: false`), which
+  messages the tab's content script with `{ type: 'spaRouteChanged' }`. A tab with no content script
+  listening (a `chrome://` page) fails the `sendMessage` silently via `chrome.runtime.lastError`,
+  which is read and discarded rather than left to surface as an unhandled rejection.
+- **`content.js`** now tracks `lastSpaDocKey`, seeded once from `orchestrator.documentKey()`
+  immediately after the initial `primeParagraph()` call so the first real navigation is compared
+  against the page the content script actually loaded on, not against `null`. `onSpaNavigate()` —
+  called from either the pre-existing `pushState`/`popstate` wiring (still correct for the
+  browser-back/forward case) or the new `spaRouteChanged` message — computes
+  `isRouteChange = newKey !== lastSpaDocKey` using `coverageModule.documentKey()` (hostname +
+  pathname, no search, no hash), so a query-string-only or hash-only `pushState` call is correctly
+  **not** treated as a new document, while an actual pathname change is. Both channels can fire for
+  the same navigation (a real back-button press dispatches genuine `popstate` *and* fires
+  `onHistoryStateUpdated`); the key comparison makes the second call a no-op rather than a second
+  reset, with no separate dedup bookkeeping needed.
+- **What a route change resets, and why each piece was necessary:**
+  - `paragraphTracker.reset()` (new) clears `paragraphs`/`active`/`pending` before the next
+    `rescan()`. Without it, an in-flight OLD-document paragraph — still "active" because the reader
+    was mid-paragraph when the route changed — surfaces as a "left" transition on the NEW document,
+    carrying the OLD paragraph's own text and stale dwell time into `coverageGate.recordProgress()`,
+    since `documentKey()` is read live at record time, not captured. Confirmed by negative control:
+    disabling only this line reproduced exactly that leak — article one's text, fingerprinted, in
+    article two's coverage record — in a real Chromium run.
+  - `comprehensionMonitor.resetParagraph()` (new) discards the in-flight `paragraphEntry` the same
+    way, without scoring it as a departure (see the function's own header for why a real-but-orphaned
+    WPM sample is still the wrong thing to keep).
+  - `scrollRegression.reset()`, `progressionEntropy.reset()`, `interactionSignals.reset()`,
+    `cursorTracker.reset()`, `scrollDynamics.reset()` — **all five already existed and were already
+    exported, and none had ever been called from anywhere in the shipped tree**, because nothing
+    before this item ever detected a route change to call them from. A sixth instance of the same
+    "dead code that reads as wired" shape CLAUDE.md already tracks for `cursor_reading`, found
+    incidentally while wiring this and closed by reusing the existing methods rather than inventing
+    new reset logic. Two of them (`scrollRegression`, `progressionEntropy`) are keyed on paragraph
+    *index*, which is only valid within one document's DOM — carrying it across a route change would
+    make a new document's paragraph 0 read as a continuation of the old document's paragraph 0.
+  - `interventionPolicy` is **deliberately not reset.** Its session cap is a session-scoped budget by
+    design (see "Interruption budget" above: "cap scales with content read, not with 'session'...
+    absolute per-session ceiling"); resetting it per SPA route would let a reader bypass the ceiling
+    by clicking through many short pages.
+  - `host.setCurrentParagraph(null)` clears the DOM reference the intervention path reads, and
+    `primeParagraph()` (already existed) re-scans the new DOM and re-establishes the first paragraph,
+    exactly as it does on initial page load.
+  - The existing `openPopups` loop in `onSpaNavigate()` already closed every unpinned popup on any
+    navigation — question cards and the quiz-offer card both go through `ui.reservePopup()`/
+    `showPopup()`, so "any open intervention card is dismissed" was already satisfied and needed no
+    new code.
+  - `restoreTextHighlights()` (item 25) was already keyed off `window.location` read live, so it
+    needed no change — it simply now actually *fires* on a real route change, since `onSpaNavigate()`
+    now actually runs on one.
+
+Verified in `tests/browser/smoke.mjs`'s new "SPA route detection (item 27)" block, against a
+purpose-built fixture (`/spa-fixture.html`) whose own inline script calls `history.pushState()`
+directly from the page's own MAIN-world context — a real client-side router, not anything the
+extension injects. A `popstate`-only test would have proven nothing about this bug, per item 25's
+own finding, so every assertion here is driven by a genuine button click that calls `pushState`
+itself: real URL change via `pushState`; a colour highlight created on article one and destroyed
+when the SPA swaps in article two's DOM; coverage genuinely accrued for article one *before*
+navigation and for article two *after*; article two's `totalParagraphs` correctly reflecting only
+its own two paragraphs; **no article-one-authored text fingerprint leaking into article two's
+coverage record** (the single sharpest check — paragraph two of article one is left deliberately
+*still active*, mid-read, at the exact instant navigation happens, which is the one scenario
+`paragraphTracker.reset()` exists to guard and a scroll-to-the-end-first test design would have
+missed entirely); a query-string-only `pushState` call correctly kept the same document key rather
+than resetting; a real `pushState` navigation back to the original pathname correctly re-anchoring
+the highlight on the freshly-restored (not the same-object) DOM; and the debug log line confirming
+the reset path actually ran. Two independent negative controls confirmed the test's sensitivity:
+disabling the entire `webNavigation` listener flipped five of the twelve checks to `false` (URL
+still changed, since that's browser-native, but nothing downstream reacted); disabling only
+`paragraphTracker.reset()` — with the message wiring and every other reset left intact — flipped
+exactly the one check built to catch it. Both were restored after confirming.
 
 ---
 
@@ -725,19 +818,25 @@ Verified by reading the tree. Line counts current as of this writing.
 ├── tldr classifier/           notebooks + synthetic CSVs — historical
 └── alcoia/
     ├── manifest.json          GENERATED from manifests/. Do not hand-edit
-    ├── background.js          service worker
+    ├── background.js          service worker; file:// PDF/PPTX redirect (tabs.onUpdated) and, since
+    │                            item 27, the webNavigation.onHistoryStateUpdated listener that
+    │                            detects a real SPA route change and messages content.js
     ├── src/content/
-    │   ├── content.js           1768 — host: modules, settings, fetch, highlight, word lookup,
-    │   │                               selection, keyboard, SPA nav, render callbacks
+    │   ├── content.js           1807 — host: modules, settings, fetch, highlight, word lookup,
+    │   │                               selection, keyboard, SPA nav (real pushState detection via
+    │   │                               background.js, item 27), render callbacks
     │   ├── ui-controller.js      424 — popups, highlight, toasts, dark mode. Owns openPopups
     │   ├── state-engine.js       271 — signal fusion, one state estimate — telemetry only, no
     │   │                               gaze branch (see the migration note above)
-    │   ├── orchestrator.js       299 — detectors, engine, budget, the one subscriber; also drives
+    │   ├── orchestrator.js       334 — detectors, engine, budget, the one subscriber; also drives
     │   │                               coverage-gate.js and quiz-offer.js from the same paragraph
-    │   │                               signal (right at the ~300-line convention ceiling)
-    │   ├── comprehension-monitor.js 315 — pace vs. difficulty vs. personal baseline; abstains
+    │   │                               signal, and handleRouteChange() (item 27) — over the
+    │   │                               ~300-line convention ceiling
+    │   ├── comprehension-monitor.js 326 — pace vs. difficulty vs. personal baseline; abstains
     │   │                               (no expectation, no WPM sample) rather than guessing when
-    │   │                               text-difficulty.js reports basis: 'structure_unavailable'
+    │   │                               text-difficulty.js reports basis: 'structure_unavailable';
+    │   │                               resetParagraph() (item 27) discards in-flight state on a
+    │   │                               genuine SPA route change without scoring it
     │   ├── receipt.js            282 — reader-owned session record + preview
     │   ├── reading-map.js        255 — sidebar minimap
     │   ├── focus-ruler.js        239 — reading band; already cursor/reading-line-first, gaze
@@ -784,9 +883,12 @@ Verified by reading the tree. Line counts current as of this writing.
     │       ├── text-difficulty.js    185 — NOT a detector. FK + syntactic load
     │       ├── response-signals.js   124 — TIER 1, not telemetry. Placement is historical
     │       ├── session-recall.js     117 — recall pool (in-memory)
-    │       ├── paragraph-tracker.js  162 — which paragraph is being read; figures/tables/pre are
+    │       ├── paragraph-tracker.js  179 — which paragraph is being read; figures/tables/pre are
     │       │                             tracked landmarks with media: true, not measured as prose;
-    │       │                             count({ excludeMedia: true }) feeds coverage-gate.js
+    │       │                             count({ excludeMedia: true }) feeds coverage-gate.js;
+    │       │                             reset() (item 27) clears in-flight state on an SPA route
+    │       │                             change so a stale paragraph never surfaces as "left" on
+    │       │                             the wrong document
     │       ├── interaction-signals.js 100 — selection, copy, blur/return
     │       ├── cursor-tracking.js    101 — pointer-Y for paragraph-tracker's override; no
     │       │                              signal()/corroborating-type surface (the dead one was
@@ -1104,14 +1206,17 @@ or genuinely inert:
 
 ### Convention drift
 
-`content.js` is **1768 lines** — up from 1709 after item 26 added the two highlight toggles (colour
-picker/summarise-direct branching in the Ctrl+drag handler, plus the async summarise tail on
-`applyTextHighlight()`), up from 1616 after item 25 added the global highlight-document cap,
-position-hint anchoring and the SPA-navigation restore hook, and down from 1754 before the gaze-path
-removal deleted roughly 280 lines of camera/calibration/tracking wiring. Still the file most in need
-of splitting further. Three files exceed the ~300-line convention now (`content.js`,
-`ui-controller.js` at 437, `comprehension-monitor.js` at 315 after item 24's abstention fix); it was
-six before the gaze-path removal. Settings live in `content.js` as loose `let`s read through accessors
+`content.js` is **1807 lines** — up from 1768 after item 27 added the real SPA route-change message
+handler, the `lastSpaDocKey` route-vs-same-document check, and the `handleRouteChange()` call site,
+up from 1709 after item 26 added the two highlight toggles (colour picker/summarise-direct branching
+in the Ctrl+drag handler, plus the async summarise tail on `applyTextHighlight()`), up from 1616
+after item 25 added the global highlight-document cap, position-hint anchoring and the
+SPA-navigation restore hook, and down from 1754 before the gaze-path removal deleted roughly 280
+lines of camera/calibration/tracking wiring. Still the file most in need of splitting further. Four
+files exceed the ~300-line convention now (`content.js`, `ui-controller.js` at 437,
+`comprehension-monitor.js` at 326 after item 27's `resetParagraph()`, `orchestrator.js` at 334 after
+item 27's `handleRouteChange()` pushed it over for the first time); it was six before the gaze-path
+removal. Settings live in `content.js` as loose `let`s read through accessors
 (`settings()` / `getSettings()`) because the storage listener reassigns them and a captured copy
 goes stale silently. **Add new logic to the new modules, never to `content.js`.**
 
