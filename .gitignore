@@ -3,6 +3,6 @@ dist/
 
 # Internal working documents — kept out of the published repository.
 # NOTE: these are ignored, not deleted. They still exist in your working tree.
-#CLAUDE.md
+CLAUDE.md
 WEBSITE-BRIEF.md
 LEGAL-DISCLOSURE-MAP.md
